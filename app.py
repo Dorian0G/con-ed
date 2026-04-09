@@ -19,7 +19,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import DEFAULT_COMPANIES, DEFAULT_METRICS
+from modules.config import DEFAULT_COMPANIES, DEFAULT_METRICS
 from modules.input_handler import parse_input
 from modules.data_collector import collect_all
 from modules.ai_extractor import extract_metrics
