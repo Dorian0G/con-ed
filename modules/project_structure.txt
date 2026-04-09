@@ -1,0 +1,16 @@
+benchmark_tool/
+├── app.py                  # Streamlit UI entry point
+├── config.py               # Shared constants and defaults
+├── modules/
+│   ├── __init__.py
+│   ├── input_handler.py    # Validates + normalizes user input
+│   ├── data_collector.py   # Web scraping + API calls
+│   ├── ai_extractor.py     # LLM-assisted metric extraction
+│   ├── data_cleaner.py     # Pandas cleaning + normalization
+│   ├── benchmark_engine.py # Rankings, percentiles, averages
+│   ├── output_generator.py # Excel workbook writer
+│   └── insight_generator.py# AI narrative summaries
+├── data/
+│   └── simulated_data.json # Fallback data for prototype
+├── outputs/                # Generated Excel files land here
+└── requirements.txt
