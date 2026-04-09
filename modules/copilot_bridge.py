@@ -13,7 +13,7 @@ Design rationale:
 """
 
 import pandas as pd
-from benchmark_engine import LOWER_IS_BETTER
+from modules.benchmark_engine import LOWER_IS_BETTER
 
 
 def _format_table(bench_df: pd.DataFrame) -> str:
