@@ -48,6 +48,17 @@ METRIC_SYNONYMS: dict[str, list[str]] = {
     ],
 }
 
+# ── Known company ticker symbols for optional API enrichment ────────────────
+COMPANY_TICKERS = {
+    "con edison": "ED",
+    "consolidated edison": "ED",
+    "national grid": "NGG",
+    "pacific gas and electric": "PCG",
+    "duke energy": "DUK",
+    "eversource energy": "ES",
+    "southern company": "SO",
+}
+
 # ── Scraping ──────────────────────────────────────────────────────────────────
 REQUEST_TIMEOUT = 10   # seconds
 USER_AGENT = (

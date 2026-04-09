@@ -21,7 +21,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-from modules.config import REQUEST_TIMEOUT, USER_AGENT
+from modules.config import REQUEST_TIMEOUT, USER_AGENT, COMPANY_TICKERS
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,19 @@ def _build_search_url(company: str) -> str:
     return f"https://html.duckduckgo.com/html/?q={requests.utils.quote(q)}"
 
 
+def _extract_first_result_url(soup: BeautifulSoup, base_url: str) -> str | None:
+    """Extract the first organic DuckDuckGo result URL."""
+    link = soup.find("a", class_="result__a")
+    if link and link.get("href"):
+        return requests.compat.urljoin(base_url, link["href"])
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if href.startswith("http") and "duckduckgo.com" not in href:
+            return href
+    return None
+
+
 def _scrape_page(url: str) -> str:
     """Fetch a URL and return its visible text (best-effort)."""
     headers = {"User-Agent": USER_AGENT}
@@ -110,6 +123,47 @@ def _scrape_page(url: str) -> str:
     for tag in soup(["script", "style", "nav", "footer"]):
         tag.decompose()
     return soup.get_text(separator=" ", strip=True)[:8000]   # cap at 8 k chars
+
+
+def _try_financial_api(company: str) -> CollectedDoc | None:
+    """Try to enrich revenue using known tickers and a finance API."""
+    ticker = COMPANY_TICKERS.get(company.lower())
+    if not ticker:
+        return None
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        return None
+
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        fin = ticker_obj.financials
+        if fin is None or fin.empty:
+            return None
+
+        revenue_rows = [str(idx).lower() for idx in fin.index if "revenue" in str(idx).lower()]
+        if not revenue_rows:
+            return None
+
+        revenue_idx = next(idx for idx in fin.index if "revenue" in str(idx).lower())
+        revenue_value = fin.loc[revenue_idx].iloc[0]
+        if revenue_value is None or (isinstance(revenue_value, float) and revenue_value != revenue_value):
+            return None
+
+        raw_text = (
+            f"{company} reported total revenue of ${revenue_value / 1e9:.2f} billion "
+            f"(source: yfinance ticker {ticker})."
+        )
+        return CollectedDoc(
+            company=company,
+            source_url=f"yfinance://{ticker}",
+            source_type="api",
+            raw_text=raw_text,
+        )
+    except Exception as exc:
+        logger.warning("Financial API lookup failed for %s: %s", company, exc)
+        return None
 
 
 def _get_simulated(company: str) -> str | None:
@@ -123,15 +177,44 @@ def collect_for_company(company: str) -> CollectedDoc:
     """
     Collect raw text for a single company.
 
-    Tries live scraping first; falls back to simulated data.
-    Logs each attempt so failures are transparent.
+    Tries optional financial API first, then live scraping, then simulated data.
+    Logs each step so failures remain transparent.
     """
+    # 0. Try optional API enrichment first (revenue data only)
+    try:
+        api_doc = _try_financial_api(company)
+        if api_doc:
+            logger.info("Collected API data for %s", company)
+            return api_doc
+    except Exception as exc:
+        logger.warning("Financial API collection failed for %s: %s", company, exc)
+
     # 1. Try live scrape (search result page → first result URL ideally)
     try:
         search_url = _build_search_url(company)
+        headers = {"User-Agent": USER_AGENT}
+        resp = requests.get(search_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        search_soup = BeautifulSoup(resp.text, "lxml")
+        target_url = _extract_first_result_url(search_soup, search_url)
+
+        if target_url:
+            try:
+                text = _scrape_page(target_url)
+                if len(text) > 200:
+                    logger.info("Scraped target page for %s: %s", company, target_url)
+                    return CollectedDoc(
+                        company=company,
+                        source_url=target_url,
+                        source_type="scrape",
+                        raw_text=text,
+                    )
+            except Exception as exc:
+                logger.warning("Target page scrape failed for %s: %s", company, exc)
+
         text = _scrape_page(search_url)
-        if len(text) > 200:     # sanity check — not a redirect / empty page
-            logger.info("Scraped search results for %s", company)
+        if len(text) > 200:
+            logger.info("Scraped search results page for %s", company)
             return CollectedDoc(
                 company=company,
                 source_url=search_url,

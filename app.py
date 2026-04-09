@@ -25,7 +25,7 @@ from modules.data_collector import collect_all
 from modules.ai_extractor import extract_metrics
 from modules.data_cleaner import build_raw_df, build_clean_df, fill_missing
 from modules.benchmark_engine import build_benchmark
-from modules.insight_generator import generate_rule_based_insights
+from modules.insight_generator import generate_insights
 from modules.output_generator import generate_excel
 from modules.copilot_bridge import build_copilot_prompt
 
@@ -143,12 +143,18 @@ progress.progress(72, text="📊 Computing rankings…")
 bench_df  = build_benchmark(filled_df)
 
 progress.progress(87, text="💡 Generating insights…")
-insights  = generate_rule_based_insights(bench_df)
-
-progress.progress(95, text="📦 Preparing Excel…")
-excel_bytes = generate_excel(raw_df, clean_df, bench_df, insights)
+insights  = generate_insights(bench_df)
 
 copilot_prompt = build_copilot_prompt(bench_df, request.companies, request.metrics)
+
+progress.progress(95, text="📦 Preparing Excel…")
+excel_bytes = generate_excel(
+    raw_df,
+    clean_df,
+    bench_df,
+    insights,
+    copilot_prompt=copilot_prompt,
+)
 
 progress.progress(100, text="✅ Done!")
 
