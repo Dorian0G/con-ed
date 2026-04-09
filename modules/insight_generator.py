@@ -15,7 +15,7 @@ import logging
 
 import pandas as pd
 
-from config import OPENAI_MODEL, USE_REAL_LLM
+from modules.config import OPENAI_MODEL, USE_REAL_LLM
 from benchmark_engine import LOWER_IS_BETTER
 
 logger = logging.getLogger(__name__)

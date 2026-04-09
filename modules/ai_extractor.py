@@ -18,7 +18,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from config import METRIC_SYNONYMS, OPENAI_MODEL, USE_REAL_LLM
+from modules.config import METRIC_SYNONYMS, OPENAI_MODEL, USE_REAL_LLM
 from modules.data_collector import CollectedDoc
 
 logger = logging.getLogger(__name__)

@@ -21,7 +21,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-from config import REQUEST_TIMEOUT, USER_AGENT
+from modules.config import REQUEST_TIMEOUT, USER_AGENT
 
 logger = logging.getLogger(__name__)
 
