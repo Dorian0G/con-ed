@@ -166,10 +166,16 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader("Benchmark Summary")
     display = bench_df[["Company","Metric","Value","Rank","Industry Average","Percentile"]]
-    st.dataframe(
-        display.style.background_gradient(subset=["Percentile"], cmap="Blues"),
-        use_container_width=True, hide_index=True,
-    )
+st.dataframe(
+    display.style.bar(
+        subset=["Percentile"],
+        color="#4A90D9",
+        vmin=0,
+        vmax=100,
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
     st.divider()
     sel = st.selectbox("Chart a metric", bench_df["Metric"].unique().tolist())
     chart_data = (
