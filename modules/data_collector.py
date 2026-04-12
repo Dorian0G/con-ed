@@ -1,34 +1,31 @@
-
 """
 data_collector.py
 Fetches raw text for each company from public sources.
 
-Fix: source_url now always resolves to a real, clickable HTTPS link.
-  - API path:       was "yfinance://ED"        → now the company's real IR page
-  - Simulated path: was "simulated://internal" → now the company's real IR page
-  - Scrape path:    already used a real URL, unchanged
-  - Unknown company fallback: "none" → kept, but also logs a warning
+Strategy (in order of preference):
+1. Financial API  — tries a free endpoint (e.g. Alpha Vantage) for revenue
+2. Web scrape     — fetches the company's investor-relations / ESG page
+3. Simulated data — deterministic fallback so the prototype always runs
+
+Each collected snippet is stored as a CollectedDoc so every downstream
+module can trace which URL a value came from.
 """
 
+import hashlib
+import json
 import time
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
-from modules.config import (
-    REQUEST_TIMEOUT,
-    USER_AGENT,
-    COMPANY_TICKERS,
-    COMPANY_IR_URLS,
-)
+from modules.config import REQUEST_TIMEOUT, USER_AGENT, COMPANY_TICKERS
 
 logger = logging.getLogger(__name__)
 
-
-# ── Data structure ─────────────────────────────────────────────────────────────
+# ── Data structures ────────────────────────────────────────────────────────────
 
 @dataclass
 class CollectedDoc:
@@ -39,6 +36,8 @@ class CollectedDoc:
 
 
 # ── Simulated fallback data ────────────────────────────────────────────────────
+# Keyed by lowercase company name. Values are realistic but illustrative.
+# Extend this dict or replace with a JSON file for larger prototypes.
 
 SIMULATED_DATA: dict[str, str] = {
     "con edison": """
@@ -93,31 +92,20 @@ SIMULATED_DATA: dict[str, str] = {
 }
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _real_url(company: str) -> str:
-    """
-    Return the real investor-relations URL for a company.
-    Falls back to a SEC EDGAR full-text search if the company isn't in
-    COMPANY_IR_URLS so there is always a clickable link.
-    """
-    key = company.lower().strip()
-    if key in COMPANY_IR_URLS:
-        return COMPANY_IR_URLS[key]
-    # Generic fallback: SEC EDGAR search for the company name
-    encoded = requests.utils.quote(company)
-    return f"https://efts.sec.gov/LATEST/search-index?q=%22{encoded}%22&dateRange=custom&startdt=2023-01-01&enddt=2024-01-01&forms=10-K"
-
+# ── Scraping helpers ──────────────────────────────────────────────────────────
 
 def _build_search_url(company: str) -> str:
+    """Construct a DuckDuckGo lite search URL for the company's annual report."""
     q = f"{company} annual report 2023 investor relations"
     return f"https://html.duckduckgo.com/html/?q={requests.utils.quote(q)}"
 
 
 def _extract_first_result_url(soup: BeautifulSoup, base_url: str) -> str | None:
+    """Extract the first organic DuckDuckGo result URL."""
     link = soup.find("a", class_="result__a")
     if link and link.get("href"):
         return requests.compat.urljoin(base_url, link["href"])
+
     for link in soup.find_all("a", href=True):
         href = link["href"]
         if href.startswith("http") and "duckduckgo.com" not in href:
@@ -126,47 +114,50 @@ def _extract_first_result_url(soup: BeautifulSoup, base_url: str) -> str | None:
 
 
 def _scrape_page(url: str) -> str:
+    """Fetch a URL and return its visible text (best-effort)."""
     headers = {"User-Agent": USER_AGENT}
-    resp    = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "lxml")
+    # Remove script/style noise
     for tag in soup(["script", "style", "nav", "footer"]):
         tag.decompose()
-    return soup.get_text(separator=" ", strip=True)[:8000]
+    return soup.get_text(separator=" ", strip=True)[:8000]   # cap at 8 k chars
 
 
 def _try_financial_api(company: str) -> CollectedDoc | None:
+    """Try to enrich revenue using known tickers and a finance API."""
     ticker = COMPANY_TICKERS.get(company.lower())
     if not ticker:
         return None
+
     try:
         import yfinance as yf
     except ImportError:
         return None
 
     try:
-        ticker_obj    = yf.Ticker(ticker)
-        fin           = ticker_obj.financials
+        ticker_obj = yf.Ticker(ticker)
+        fin = ticker_obj.financials
         if fin is None or fin.empty:
             return None
 
-        revenue_rows = [i for i in fin.index if "revenue" in str(i).lower()]
+        revenue_rows = [str(idx).lower() for idx in fin.index if "revenue" in str(idx).lower()]
         if not revenue_rows:
             return None
 
-        revenue_value = fin.loc[revenue_rows[0]].iloc[0]
+        revenue_idx = next(idx for idx in fin.index if "revenue" in str(idx).lower())
+        revenue_value = fin.loc[revenue_idx].iloc[0]
         if revenue_value is None or (isinstance(revenue_value, float) and revenue_value != revenue_value):
             return None
 
         raw_text = (
             f"{company} reported total revenue of ${revenue_value / 1e9:.2f} billion "
-            f"for the most recent fiscal year (source: Yahoo Finance, ticker {ticker})."
+            f"(source: yfinance ticker {ticker})."
         )
-
-        # FIX: use the real IR page URL instead of "yfinance://ED"
         return CollectedDoc(
             company=company,
-            source_url=_real_url(company),
+            source_url=f"yfinance://{ticker}",
             source_type="api",
             raw_text=raw_text,
         )
@@ -176,13 +167,20 @@ def _try_financial_api(company: str) -> CollectedDoc | None:
 
 
 def _get_simulated(company: str) -> str | None:
-    return SIMULATED_DATA.get(company.lower().strip())
+    """Return simulated text for a company if available."""
+    return SIMULATED_DATA.get(company.lower())
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def collect_for_company(company: str) -> CollectedDoc:
-    # 0. Optional API enrichment (revenue only)
+    """
+    Collect raw text for a single company.
+
+    Tries optional financial API first, then live scraping, then simulated data.
+    Logs each step so failures remain transparent.
+    """
+    # 0. Try optional API enrichment first (revenue data only)
     try:
         api_doc = _try_financial_api(company)
         if api_doc:
@@ -191,14 +189,14 @@ def collect_for_company(company: str) -> CollectedDoc:
     except Exception as exc:
         logger.warning("Financial API collection failed for %s: %s", company, exc)
 
-    # 1. Live scrape
+    # 1. Try live scrape (search result page → first result URL ideally)
     try:
-        search_url  = _build_search_url(company)
-        headers     = {"User-Agent": USER_AGENT}
-        resp        = requests.get(search_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        search_url = _build_search_url(company)
+        headers = {"User-Agent": USER_AGENT}
+        resp = requests.get(search_url, headers=headers, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         search_soup = BeautifulSoup(resp.text, "lxml")
-        target_url  = _extract_first_result_url(search_soup, search_url)
+        target_url = _extract_first_result_url(search_soup, search_url)
 
         if target_url:
             try:
@@ -207,7 +205,7 @@ def collect_for_company(company: str) -> CollectedDoc:
                     logger.info("Scraped target page for %s: %s", company, target_url)
                     return CollectedDoc(
                         company=company,
-                        source_url=target_url,   # already a real URL
+                        source_url=target_url,
                         source_type="scrape",
                         raw_text=text,
                     )
@@ -219,33 +217,29 @@ def collect_for_company(company: str) -> CollectedDoc:
             logger.info("Scraped search results page for %s", company)
             return CollectedDoc(
                 company=company,
-                source_url=search_url,           # already a real URL
+                source_url=search_url,
                 source_type="scrape",
                 raw_text=text,
             )
     except Exception as exc:
         logger.warning("Scrape failed for %s: %s", company, exc)
 
-    # 2. Simulated fallback
+    # 2. Fall back to simulated data
     sim = _get_simulated(company)
     if sim:
         logger.info("Using simulated data for %s", company)
-        # FIX: use the real IR page URL instead of "simulated://internal"
         return CollectedDoc(
             company=company,
-            source_url=_real_url(company),
+            source_url="simulated://internal",
             source_type="simulated",
             raw_text=sim,
         )
 
-    # 3. Empty doc — nothing found
-    logger.warning(
-        "No data found for '%s'. Add it to SIMULATED_DATA or COMPANY_IR_URLS in config.py.",
-        company,
-    )
+    # 3. Return an empty doc so the pipeline continues (with missing values)
+    logger.warning("No data found for %s; returning empty doc", company)
     return CollectedDoc(
         company=company,
-        source_url=_real_url(company),  # still provide the IR page as best-effort
+        source_url="none",
         source_type="none",
         raw_text="",
     )
@@ -255,17 +249,8 @@ def collect_all(companies: list[str]) -> list[CollectedDoc]:
     """Collect docs for all companies with a polite crawl delay."""
     docs = []
     for i, company in enumerate(companies):
-        try:
-            doc = collect_for_company(company)
-        except Exception as exc:
-            logger.error("Unexpected error collecting %s: %s — using empty doc.", company, exc)
-            doc = CollectedDoc(
-                company=company,
-                source_url=_real_url(company),
-                source_type="none",
-                raw_text="",
-            )
+        doc = collect_for_company(company)
         docs.append(doc)
-        if doc.source_type == "scrape" and i < len(companies) - 1:
-            time.sleep(0.5)
+        if i < len(companies) - 1:
+            time.sleep(0.5)   # be polite to servers
     return docs
