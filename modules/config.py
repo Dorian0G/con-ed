@@ -5,6 +5,12 @@ Global constants, default companies/metrics, and metric synonyms.
 import os
 import re
 
+
+def normalize_metric_name(name: str) -> str:
+    """Normalize metric name to title case for consistent lookup."""
+    return name.strip().title()
+
+
 # ── Output ────────────────────────────────────────────────────────────────────
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
