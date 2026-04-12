@@ -39,9 +39,6 @@ def _bottom_performer(bench_df: pd.DataFrame, metric: str) -> str:
 
 def generate_rule_based_insights(bench_df: pd.DataFrame) -> str:
     """Generate deterministic insight bullets from benchmark data."""
-    if "Metric" not in bench_df.columns or bench_df.empty:
-        return "## AI-Generated Benchmark Insights\n\nNo benchmark metrics were available for insight generation."
-
     metrics = bench_df["Metric"].unique().tolist()
     lines = ["## AI-Generated Benchmark Insights\n"]
 

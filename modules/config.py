@@ -5,7 +5,6 @@ Extend this file to add new metrics without touching module logic.
 """
 
 import os
-import re
 
 # ── Output ──────────────────────────────────────────────────────────────────
 OUTPUT_DIR = "outputs"
@@ -48,24 +47,6 @@ METRIC_SYNONYMS: dict[str, list[str]] = {
         "scope 1 emissions", "total emissions",
     ],
 }
-
-
-def normalize_metric_name(metric: str) -> str:
-    """Map variant metric labels to a canonical metric name for extraction and ranking."""
-    metric = metric.strip()
-    if metric in METRIC_SYNONYMS:
-        return metric
-
-    base_metric = re.sub(r"\s*\(.*\)\s*$", "", metric).strip()
-    if base_metric in METRIC_SYNONYMS:
-        return base_metric
-
-    lower_metric = metric.lower()
-    for canonical, synonyms in METRIC_SYNONYMS.items():
-        if lower_metric == canonical.lower() or any(lower_metric == syn.lower() for syn in synonyms):
-            return canonical
-
-    return metric
 
 # ── Known company ticker symbols for optional API enrichment ────────────────
 COMPANY_TICKERS = {
