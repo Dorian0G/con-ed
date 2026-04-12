@@ -18,7 +18,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from modules.config import METRIC_SYNONYMS, OPENAI_MODEL, USE_REAL_LLM, normalize_metric_name
+from modules.config import METRIC_SYNONYMS, OPENAI_MODEL, USE_REAL_LLM
 from modules.data_collector import CollectedDoc
 
 logger = logging.getLogger(__name__)
@@ -72,9 +72,8 @@ def extract_rule_based(doc: CollectedDoc, metrics: list[str]) -> list[ExtractedV
     """Rule-based extraction using synonym matching and regex."""
     results = []
     for metric in metrics:
-        search_metric = normalize_metric_name(metric)
-        synonyms = METRIC_SYNONYMS.get(search_metric, [search_metric])
-        all_keywords = list(dict.fromkeys([metric, search_metric] + synonyms))
+        synonyms = METRIC_SYNONYMS.get(metric, [metric])
+        all_keywords = [metric] + synonyms
         raw = _find_value_near_keyword(doc.raw_text, all_keywords)
         results.append(
             ExtractedValue(

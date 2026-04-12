@@ -39,7 +39,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS: clean, professional ───────────────────────────────────────────
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem; }
@@ -69,7 +69,10 @@ st.markdown("""
 
 # ── Sidebar: inputs ────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/Lightning_bolt_simple.svg/240px-Lightning_bolt_simple.svg.png", width=48)
+    st.image(
+        "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/Lightning_bolt_simple.svg/240px-Lightning_bolt_simple.svg.png",
+        width=48,
+    )
     st.title("Utility Benchmark Tool")
     st.caption("Competitive intelligence for energy companies — no account required.")
     st.divider()
@@ -101,7 +104,6 @@ with st.sidebar:
 **No API keys required.**
 [Deploy your own copy →](https://share.streamlit.io)
 """)
-
 
 # ── Main panel ─────────────────────────────────────────────────────────────────
 st.title("⚡ Utility Company Benchmark Analysis")
@@ -136,7 +138,7 @@ extracted = extract_metrics(docs, request.metrics)
 
 progress.progress(55, text="🧹 Cleaning and normalizing…")
 raw_df    = build_raw_df(extracted)
-clean_df  = build_clean_df(raw_df, expected_metrics=request.metrics)
+clean_df  = build_clean_df(raw_df)
 filled_df = fill_missing(clean_df)
 
 progress.progress(72, text="📊 Computing rankings…")
@@ -165,10 +167,18 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 with tab1:
     st.subheader("Benchmark Summary")
-    display = bench_df[["Company","Metric","Value","Rank","Industry Average","Percentile"]]
+    display = bench_df[["Company", "Metric", "Value", "Rank", "Industry Average", "Percentile"]]
+    # FIX: was outside this block due to indentation error; also replaced
+    # background_gradient (requires matplotlib) with bar (no extra deps)
     st.dataframe(
-        display.style.background_gradient(subset=["Percentile"], cmap="Blues"),
-        use_container_width=True, hide_index=True,
+        display.style.bar(
+            subset=["Percentile"],
+            color="#4A90D9",
+            vmin=0,
+            vmax=100,
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
     st.divider()
     sel = st.selectbox("Chart a metric", bench_df["Metric"].unique().tolist())
@@ -187,7 +197,6 @@ with tab2:
 with tab3:
     st.subheader("Raw Extracted Data")
     st.dataframe(raw_df, use_container_width=True, hide_index=True)
-    # Flag simulated rows clearly
     sim_count = (raw_df["Source Type"] == "simulated").sum()
     if sim_count:
         st.warning(

@@ -84,7 +84,7 @@ def build_raw_df(values: list[ExtractedValue]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_clean_df(raw_df: pd.DataFrame, expected_metrics: list[str] | None = None) -> pd.DataFrame:
+def build_clean_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     Produce a cleaned, pivoted DataFrame:
       rows = companies
@@ -105,15 +105,6 @@ def build_clean_df(raw_df: pd.DataFrame, expected_metrics: list[str] | None = No
     ).reset_index()
 
     pivot.columns.name = None   # remove MultiIndex name artifact
-
-    if expected_metrics is not None:
-        for metric in expected_metrics:
-            if metric not in pivot.columns:
-                pivot[metric] = pd.NA
-        # Preserve requested metric order after the Company column.
-        columns = ["Company"] + [m for m in expected_metrics if m in pivot.columns]
-        pivot = pivot[columns]
-
     return pivot
 
 
