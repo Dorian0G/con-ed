@@ -167,27 +167,30 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 with tab1:
     st.subheader("Benchmark Summary")
-    display = bench_df[["Company", "Metric", "Value", "Rank", "Industry Average", "Percentile"]]
-    # FIX: was outside this block due to indentation error; also replaced
-    # background_gradient (requires matplotlib) with bar (no extra deps)
-    st.dataframe(
-        display.style.bar(
-            subset=["Percentile"],
-            color="#4A90D9",
-            vmin=0,
-            vmax=100,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.divider()
-    sel = st.selectbox("Chart a metric", bench_df["Metric"].unique().tolist())
-    chart_data = (
-        bench_df[bench_df["Metric"] == sel]
-        .set_index("Company")["Value"]
-        .sort_values(ascending=False)
-    )
-    st.bar_chart(chart_data)
+    if bench_df.empty or "Metric" not in bench_df.columns:
+        st.warning("No benchmark data available. Please check your inputs.")
+    else:
+        display = bench_df[["Company", "Metric", "Value", "Rank", "Industry Average", "Percentile"]]
+        # FIX: was outside this block due to indentation error; also replaced
+        # background_gradient (requires matplotlib) with bar (no extra deps)
+        st.dataframe(
+            display.style.bar(
+                subset=["Percentile"],
+                color="#4A90D9",
+                vmin=0,
+                vmax=100,
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.divider()
+        sel = st.selectbox("Chart a metric", bench_df["Metric"].unique().tolist())
+        chart_data = (
+            bench_df[bench_df["Metric"] == sel]
+            .set_index("Company")["Value"]
+            .sort_values(ascending=False)
+        )
+        st.bar_chart(chart_data)
 
 with tab2:
     st.subheader("Cleaned & Normalized Data")

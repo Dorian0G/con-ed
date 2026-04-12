@@ -177,10 +177,21 @@ def collect_for_company(company: str) -> CollectedDoc:
     """
     Collect raw text for a single company.
 
-    Tries optional financial API first, then live scraping, then simulated data.
+    Tries simulated data first for demo reliability, then optional financial API, then live scraping.
     Logs each step so failures remain transparent.
     """
-    # 0. Try optional API enrichment first (revenue data only)
+    # 0. Try simulated data first for consistent demo
+    sim = _get_simulated(company)
+    if sim:
+        logger.info("Using simulated data for %s", company)
+        return CollectedDoc(
+            company=company,
+            source_url="simulated://internal",
+            source_type="simulated",
+            raw_text=sim,
+        )
+
+    # 1. Try optional API enrichment (revenue data only)
     try:
         api_doc = _try_financial_api(company)
         if api_doc:
@@ -189,7 +200,7 @@ def collect_for_company(company: str) -> CollectedDoc:
     except Exception as exc:
         logger.warning("Financial API collection failed for %s: %s", company, exc)
 
-    # 1. Try live scrape (search result page → first result URL ideally)
+    # 2. Try live scrape (search result page → first result URL ideally)
     try:
         search_url = _build_search_url(company)
         headers = {"User-Agent": USER_AGENT}
@@ -223,17 +234,6 @@ def collect_for_company(company: str) -> CollectedDoc:
             )
     except Exception as exc:
         logger.warning("Scrape failed for %s: %s", company, exc)
-
-    # 2. Fall back to simulated data
-    sim = _get_simulated(company)
-    if sim:
-        logger.info("Using simulated data for %s", company)
-        return CollectedDoc(
-            company=company,
-            source_url="simulated://internal",
-            source_type="simulated",
-            raw_text=sim,
-        )
 
     # 3. Return an empty doc so the pipeline continues (with missing values)
     logger.warning("No data found for %s; returning empty doc", company)

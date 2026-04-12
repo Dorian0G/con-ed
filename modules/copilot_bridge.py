@@ -18,6 +18,9 @@ from modules.benchmark_engine import LOWER_IS_BETTER
 
 def _format_table(bench_df: pd.DataFrame) -> str:
     """Build a compact plain-text table of benchmark results."""
+    if bench_df.empty or "Metric" not in bench_df.columns:
+        return "No benchmark data available."
+
     metrics = bench_df["Metric"].unique().tolist()
     lines = []
 

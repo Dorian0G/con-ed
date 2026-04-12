@@ -72,7 +72,16 @@ def extract_rule_based(doc: CollectedDoc, metrics: list[str]) -> list[ExtractedV
     """Rule-based extraction using synonym matching and regex."""
     results = []
     for metric in metrics:
-        synonyms = METRIC_SYNONYMS.get(metric, [metric])
+        # Find base metric by substring match
+        base_metric = None
+        for key in METRIC_SYNONYMS:
+            if key.lower() in metric.lower() or metric.lower() in key.lower():
+                base_metric = key
+                break
+        if base_metric:
+            synonyms = METRIC_SYNONYMS[base_metric]
+        else:
+            synonyms = []
         all_keywords = [metric] + synonyms
         raw = _find_value_near_keyword(doc.raw_text, all_keywords)
         results.append(
