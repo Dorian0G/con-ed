@@ -13,6 +13,8 @@ For each metric:
 
 import pandas as pd
 
+from modules.config import normalize_metric_name
+
 # Metrics where a LOWER value = better rank
 LOWER_IS_BETTER = {
     "Outage Frequency",
@@ -22,7 +24,8 @@ LOWER_IS_BETTER = {
 
 def _rank_metric(series: pd.Series, metric: str) -> pd.Series:
     """Rank companies on a single metric. Returns rank as integer (1 = best)."""
-    ascending = metric in LOWER_IS_BETTER
+    metric_key = normalize_metric_name(metric)
+    ascending = metric_key in LOWER_IS_BETTER
     return series.rank(ascending=ascending, method="min").astype("Int64")
 
 
@@ -33,7 +36,8 @@ def _percentile(series: pd.Series, metric: str) -> pd.Series:
     the best performer always has the highest percentile.
     """
     pct = series.rank(pct=True) * 100
-    if metric in LOWER_IS_BETTER:
+    metric_key = normalize_metric_name(metric)
+    if metric_key in LOWER_IS_BETTER:
         pct = 100 - pct
     return pct.round(1)
 
