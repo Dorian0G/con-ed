@@ -292,7 +292,7 @@ if run_btn:
     progress.progress(55, text="🧹 Cleaning and normalizing…")
     raw_df = build_raw_df(extracted)
 
-    clean_df = build_clean_df
+    clean_df = build_clean_df(raw_df)
     filled_df = fill_missing(clean_df)
 
     progress.progress(72, text="📊 Computing rankings…")
