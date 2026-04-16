@@ -29,8 +29,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CACHE_PATH = Path("outputs/data_cache.json")
-os.makedirs("outputs", exist_ok=True)
+# Streamlit Cloud has a read-only filesystem except /tmp
+# Use /tmp when running on cloud, local outputs/ when running locally
+def _cache_path() -> Path:
+    # Streamlit Cloud mounts app at /mount/src/
+    if Path("/mount/src").exists():
+        p = Path("/tmp/utility_benchmark_cache.json")
+    else:
+        p = Path("outputs/data_cache.json")
+        p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+CACHE_PATH = _cache_path()
 
 METRICS = [
     "Revenue",
@@ -101,9 +111,9 @@ def _now() -> str:
 
 def load() -> dict:
     """Load cache from disk. Seeds from VERIFIED_DEFAULTS if missing."""
-    if CACHE_PATH.exists():
+    if _cache_path().exists():
         try:
-            with open(CACHE_PATH) as f:
+            with open(_cache_path()) as f:
                 cache = json.load(f)
             # Back-fill any missing companies or metrics
             for company, metrics in VERIFIED_DEFAULTS.items():
@@ -138,9 +148,13 @@ def _seed_cache() -> dict:
 
 
 def save(cache: dict) -> None:
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_PATH, "w") as f:
-        json.dump(cache, f, indent=2)
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        logger.warning("Could not save cache to %s: %s", path, e)
 
 
 def get_value(cache: dict, company: str, metric: str) -> dict | None:
