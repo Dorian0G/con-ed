@@ -293,9 +293,6 @@ if run_btn:
     raw_df = build_raw_df(extracted)
 
     clean_df = build_clean_df(
-        raw_df,
-        expected_companies=request.companies,
-        expected_metrics=request.metrics,
     )
     filled_df = fill_missing(clean_df)
 
