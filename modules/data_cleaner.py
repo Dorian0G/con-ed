@@ -33,7 +33,6 @@ def _parse_numeric(raw: str, metric: str = "") -> float | None:
         return None
 
     raw_lower = raw.lower()
-
     m = _NUM_RE.search(raw)
     if not m:
         return None
@@ -55,22 +54,22 @@ def _parse_numeric(raw: str, metric: str = "") -> float | None:
 def build_raw_df(values: list[ExtractedValue]) -> pd.DataFrame:
     return pd.DataFrame([
         {
-            "Company":     v.company,
-            "Metric":      v.metric,
-            "Value":       v.raw_value,
-            "Source":      v.source_url,
+            "Company": v.company,
+            "Metric": v.metric,
+            "Value": v.raw_value,
+            "Source": v.source_url,
             "Source Type": v.source_type,
-            "Confidence":  v.confidence,
+            "Confidence": v.confidence,
         }
         for v in values
     ])
 
 
-def build_clean_df(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    FIXED VERSION:
-    Keeps all metrics even if they are entirely missing.
-    """
+def build_clean_df(
+    raw_df: pd.DataFrame,
+    expected_companies: list[str] | None = None,
+    expected_metrics: list[str] | None = None,
+) -> pd.DataFrame:
     df = raw_df.copy()
 
     df["Numeric Value"] = df.apply(
@@ -78,11 +77,9 @@ def build_clean_df(raw_df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    # Preserve original order
-    all_companies = df["Company"].drop_duplicates().tolist()
-    all_metrics   = df["Metric"].drop_duplicates().tolist()
+    all_companies = expected_companies or df["Company"].drop_duplicates().tolist()
+    all_metrics = expected_metrics or df["Metric"].drop_duplicates().tolist()
 
-    # KEY FIX: use pivot() + reindex instead of pivot_table()
     pivot = (
         df.drop_duplicates(subset=["Company", "Metric"], keep="first")
           .pivot(index="Company", columns="Metric", values="Numeric Value")
@@ -107,11 +104,9 @@ def fill_missing(clean_df: pd.DataFrame) -> pd.DataFrame:
                 n, col, col_mean
             )
             df[col] = df[col].fillna(col_mean)
-
         elif n:
-            # Entire column missing — KEEP it, don't drop it
             logger.info(
-                "Column '%s' entirely missing — leaving as NaN (will still display).",
+                "Column '%s' entirely missing — leaving as NaN.",
                 col
             )
 
