@@ -1,270 +1,235 @@
 """
 data_collector.py
-Fetches raw text for each company from public sources.
+Builds CollectedDoc objects from the live cache + live scraping.
 
-Fix: source_url now always resolves to a real, clickable HTTPS link.
-  - API path:       was "yfinance://ED"        → now the company's real IR page
-  - Simulated path: was "simulated://internal" → now the company's real IR page
-  - Scrape path:    already used a real URL, unchanged
-  - Unknown company fallback: "none" → kept, but also logs a warning
+Priority per metric:
+  1. Live EDGAR XBRL / 10-K text (freshest)
+  2. Cache (last successfully fetched live value)
+  3. VERIFIED_DEFAULTS (primary-source seed values)
+
+The cache is updated automatically by data_updater.py on startup
+and every 24 hours. When a company files a new 10-K or publishes
+a new sustainability report, the cache picks it up automatically.
 """
 
-import time
 import logging
-from dataclasses import dataclass
-from pathlib import Path
+import time
+from dataclasses import dataclass, field
 
 import requests
 from bs4 import BeautifulSoup
 
-from modules.config import (
-    REQUEST_TIMEOUT,
-    USER_AGENT,
-    COMPANY_TICKERS,
-    COMPANY_IR_URLS,
-)
+from modules import data_cache as cache_module
+from modules.config import COMPANY_IR_URLS, COMPANY_TICKERS, REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+SEC_HEADERS = {
+    "User-Agent": "UtilityBenchmark contact@example.com",
+    "Accept": "application/json",
+}
 
-# ── Data structure ─────────────────────────────────────────────────────────────
 
 @dataclass
 class CollectedDoc:
     company: str
     source_url: str
-    source_type: str          # "api" | "scrape" | "simulated"
-    raw_text: str
+    source_type: str
+    raw_text: str             # live text (EDGAR / ESG)
+    fallback_text: str = ""   # cache-derived sentences
 
-
-# ── Simulated fallback data ────────────────────────────────────────────────────
-
-SIMULATED_DATA: dict[str, str] = {
-    "con edison": """
-        Con Edison reported total revenue of $15.7 billion for fiscal year 2023.
-        The company achieved a renewable energy percentage of 28% of its energy mix.
-        SAIDI (outage frequency) was 72 minutes per customer.
-        Customer satisfaction score was 74 out of 100 per J.D. Power.
-        Carbon emissions were 4.2 million metric tons of CO2 equivalent.
-    """,
-    "national grid": """
-        National Grid plc reported operating revenue of $22.1 billion.
-        Renewable energy share reached 35% of total generation capacity.
-        Average outage frequency index was 58 minutes (SAIDI).
-        Net promoter score was 61.
-        Scope 1 GHG emissions totaled 3.8 million MT CO2.
-    """,
-    "pacific gas and electric": """
-        PG&E total revenue was $24.4 billion in 2023.
-        Clean energy percentage stands at 39% including hydro and solar.
-        Power interruptions (SAIFI) averaged 1.2 per customer annually.
-        J.D. Power residential satisfaction index: 668 (out of 1000).
-        Greenhouse gas emissions: 5.1 million metric tons CO2.
-    """,
-    "duke energy": """
-        Duke Energy net revenue: $28.8 billion fiscal 2023.
-        Renewables mix is 21% of total portfolio.
-        Outage minutes per customer: 90 (SAIDI).
-        Customer satisfaction score of 71/100.
-        Total carbon footprint: 68 million MT CO2.
-    """,
-    "consolidated edison": """
-        Consolidated Edison revenues of $15.7 billion.
-        28% of supply sourced from renewable energy.
-        System Average Interruption Duration Index: 72 minutes.
-        CSAT score: 74.
-        CO2 equivalent emissions: 4.2 million metric tons.
-    """,
-    "eversource energy": """
-        Eversource reported $12.3 billion total revenue in 2023.
-        Renewable energy percentage: 31%.
-        SAIDI outage frequency: 65 minutes.
-        Customer satisfaction (J.D. Power): 79 out of 100.
-        Carbon emissions: 2.9 million MT CO2.
-    """,
-    "southern company": """
-        Southern Company total revenues: $23.6 billion.
-        Renewable energy share: 17%.
-        Outage duration: 95 minutes SAIDI.
-        Customer satisfaction score: 69.
-        Greenhouse gas emissions: 72 million MT CO2.
-    """,
-}
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _real_url(company: str) -> str:
-    """
-    Return the real investor-relations URL for a company.
-    Falls back to a SEC EDGAR full-text search if the company isn't in
-    COMPANY_IR_URLS so there is always a clickable link.
-    """
     key = company.lower().strip()
     if key in COMPANY_IR_URLS:
         return COMPANY_IR_URLS[key]
-    # Generic fallback: SEC EDGAR search for the company name
-    encoded = requests.utils.quote(company)
-    return f"https://efts.sec.gov/LATEST/search-index?q=%22{encoded}%22&dateRange=custom&startdt=2023-01-01&enddt=2024-01-01&forms=10-K"
+    return f"https://www.sec.gov/cgi-bin/browse-edgar?company={requests.utils.quote(company)}&action=getcompany&type=10-K"
 
 
-def _build_search_url(company: str) -> str:
-    q = f"{company} annual report 2023 investor relations"
-    return f"https://html.duckduckgo.com/html/?q={requests.utils.quote(q)}"
+def _cache_to_text(company: str, cache: dict) -> str:
+    """
+    Convert cached metric values into extractable sentences.
+    Each sentence uses the exact phrasing the regex patterns expect.
+    """
+    key = company.lower().strip()
+    company_data = cache.get("companies", {}).get(key, {})
+    if not company_data:
+        return ""
+
+    lines = []
+    templates = {
+        "Revenue": lambda v, y: f"{company} reported total revenue of ${v:.2f} billion for fiscal year {y.replace('FY','')}.",
+        "Renewable Energy %": lambda v, y: f"Renewable energy percentage was {v:.1f}% of total generation.",
+        "Outage Frequency": lambda v, y: f"Outage frequency (SAIDI) was {v:.0f} minutes per customer.",
+        "Customer Satisfaction Score": lambda v, y: f"Customer satisfaction score was {v*10:.0f} out of 1000 per J.D. Power {y}.",
+        "Carbon Emissions (MT CO2)": lambda v, y: f"Carbon emissions were {v:.2f} million metric tons of CO2.",
+    }
+    for metric, tmpl in templates.items():
+        entry = company_data.get(metric)
+        if entry and entry.get("value") is not None:
+            try:
+                lines.append(tmpl(entry["value"], entry.get("year", "")))
+            except Exception:
+                pass
+
+    return "\n".join(lines)
 
 
-def _extract_first_result_url(soup: BeautifulSoup, base_url: str) -> str | None:
-    link = soup.find("a", class_="result__a")
-    if link and link.get("href"):
-        return requests.compat.urljoin(base_url, link["href"])
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if href.startswith("http") and "duckduckgo.com" not in href:
-            return href
+def _get(url: str, headers: dict) -> requests.Response | None:
+    try:
+        r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        return r if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _sec_xbrl_revenue(company: str, ciks: dict) -> str | None:
+    cik = ciks.get(company.lower().strip())
+    if not cik:
+        return None
+    r = _get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json", SEC_HEADERS)
+    if not r:
+        return None
+    try:
+        us_gaap = r.json().get("facts", {}).get("us-gaap", {})
+        for tag in ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]:
+            entries = [e for e in us_gaap.get(tag, {}).get("units", {}).get("USD", [])
+                       if e.get("form") == "10-K" and e.get("fp") == "FY"]
+            if not entries:
+                continue
+            latest = sorted(entries, key=lambda x: x.get("end", ""), reverse=True)[0]
+            val_b = latest["val"] / 1e9
+            year  = latest["end"][:4]
+            return f"{company} total revenue of ${val_b:.2f} billion for fiscal year {year}."
+    except Exception:
+        pass
     return None
 
 
-def _scrape_page(url: str) -> str:
-    headers = {"User-Agent": USER_AGENT}
-    resp    = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
-    for tag in soup(["script", "style", "nav", "footer"]):
-        tag.decompose()
-    return soup.get_text(separator=" ", strip=True)[:8000]
-
-
-def _try_financial_api(company: str) -> CollectedDoc | None:
-    ticker = COMPANY_TICKERS.get(company.lower())
-    if not ticker:
-        return None
-    try:
-        import yfinance as yf
-    except ImportError:
-        return None
-
-    try:
-        ticker_obj    = yf.Ticker(ticker)
-        fin           = ticker_obj.financials
-        if fin is None or fin.empty:
-            return None
-
-        revenue_rows = [i for i in fin.index if "revenue" in str(i).lower()]
-        if not revenue_rows:
-            return None
-
-        revenue_value = fin.loc[revenue_rows[0]].iloc[0]
-        if revenue_value is None or (isinstance(revenue_value, float) and revenue_value != revenue_value):
-            return None
-
-        raw_text = (
-            f"{company} reported total revenue of ${revenue_value / 1e9:.2f} billion "
-            f"for the most recent fiscal year (source: Yahoo Finance, ticker {ticker})."
-        )
-
-        # FIX: use the real IR page URL instead of "yfinance://ED"
-        return CollectedDoc(
-            company=company,
-            source_url=_real_url(company),
-            source_type="api",
-            raw_text=raw_text,
-        )
-    except Exception as exc:
-        logger.warning("Financial API lookup failed for %s: %s", company, exc)
-        return None
-
-
-def _get_simulated(company: str) -> str | None:
-    return SIMULATED_DATA.get(company.lower().strip())
-
-
-# ── Public interface ──────────────────────────────────────────────────────────
-
-def collect_for_company(company: str) -> CollectedDoc:
-    # 0. Optional API enrichment (revenue only)
-    try:
-        api_doc = _try_financial_api(company)
-        if api_doc:
-            logger.info("Collected API data for %s", company)
-            return api_doc
-    except Exception as exc:
-        logger.warning("Financial API collection failed for %s: %s", company, exc)
-
-    # 1. Live scrape
-    try:
-        search_url  = _build_search_url(company)
-        headers     = {"User-Agent": USER_AGENT}
-        resp        = requests.get(search_url, headers=headers, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        search_soup = BeautifulSoup(resp.text, "lxml")
-        target_url  = _extract_first_result_url(search_soup, search_url)
-
-        if target_url:
-            try:
-                text = _scrape_page(target_url)
-                if len(text) > 200:
-                    logger.info("Scraped target page for %s: %s", company, target_url)
-                    return CollectedDoc(
-                        company=company,
-                        source_url=target_url,   # already a real URL
-                        source_type="scrape",
-                        raw_text=text,
-                    )
-            except Exception as exc:
-                logger.warning("Target page scrape failed for %s: %s", company, exc)
-
-        text = _scrape_page(search_url)
-        if len(text) > 200:
-            logger.info("Scraped search results page for %s", company)
-            return CollectedDoc(
-                company=company,
-                source_url=search_url,           # already a real URL
-                source_type="scrape",
-                raw_text=text,
-            )
-    except Exception as exc:
-        logger.warning("Scrape failed for %s: %s", company, exc)
-
-    # 2. Simulated fallback
-    sim = _get_simulated(company)
-    if sim:
-        logger.info("Using simulated data for %s", company)
-        # FIX: use the real IR page URL instead of "simulated://internal"
-        return CollectedDoc(
-            company=company,
-            source_url=_real_url(company),
-            source_type="simulated",
-            raw_text=sim,
-        )
-
-    # 3. Empty doc — nothing found
-    logger.warning(
-        "No data found for '%s'. Add it to SIMULATED_DATA or COMPANY_IR_URLS in config.py.",
-        company,
+def _sec_10k_snippets(company: str, search_term: str, ciks: dict) -> str | None:
+    cik = ciks.get(company.lower().strip())
+    entity = f"CIK{cik}" if cik else company
+    url = (
+        "https://efts.sec.gov/LATEST/search-index"
+        f"?q={requests.utils.quote(search_term)}"
+        f"&entity={requests.utils.quote(entity)}"
+        "&forms=10-K&dateRange=custom&startdt=2024-01-01&enddt=2026-12-31"
     )
+    r = _get(url, SEC_HEADERS)
+    if not r:
+        return None
+    try:
+        hits = r.json().get("hits", {}).get("hits", [])
+        if not hits:
+            return None
+        snippets = []
+        for fh in hits[0].get("highlight", {}).values():
+            snippets.extend(s.replace("<em>", "").replace("</em>", "") for s in fh[:3])
+        return " ".join(snippets) if snippets else None
+    except Exception:
+        return None
+
+
+def _scrape_esg(company: str, esg_urls: dict) -> str | None:
+    for url in esg_urls.get(company.lower().strip(), []):
+        r = _get(url, HEADERS)
+        if r:
+            soup = BeautifulSoup(r.text, "lxml")
+            for t in soup(["script", "style", "nav", "footer"]):
+                t.decompose()
+            text = soup.get_text(" ", strip=True)[:8000]
+            if len(text) > 500:
+                return text
+    return None
+
+
+def collect_for_company(company: str, cache: dict,
+                        ciks: dict, esg_urls: dict) -> CollectedDoc:
+    """
+    Build a CollectedDoc using:
+      raw_text      = live EDGAR + ESG scrape (freshest available)
+      fallback_text = cache-derived sentences (always populated)
+    """
+    live_chunks: list[str] = []
+    sources: list[str] = []
+
+    # Revenue from EDGAR XBRL
+    rev = _sec_xbrl_revenue(company, ciks)
+    if rev:
+        live_chunks.append(rev)
+        sources.append("edgar-xbrl")
+
+    # SAIDI, Carbon, Customer Sat from EDGAR 10-K text
+    for term, label in [
+        ("SAIDI",             "edgar-saidi"),
+        ("scope 1 emissions", "edgar-carbon"),
+        ("J.D. Power",        "edgar-jdpower"),
+        ("renewable energy",  "edgar-renewable"),
+    ]:
+        snippet = _sec_10k_snippets(company, term, ciks)
+        if snippet:
+            live_chunks.append(snippet)
+            sources.append(label)
+
+    # ESG page scrape
+    esg = _scrape_esg(company, esg_urls)
+    if esg:
+        live_chunks.append(esg)
+        sources.append("esg-scrape")
+
+    # Build fallback text from cache
+    fallback = _cache_to_text(company, cache)
+
     return CollectedDoc(
         company=company,
-        source_url=_real_url(company),  # still provide the IR page as best-effort
-        source_type="none",
-        raw_text="",
+        source_url=_real_url(company),
+        source_type="+".join(sources) if sources else "cache",
+        raw_text="\n\n".join(c.strip() for c in live_chunks if c.strip()),
+        fallback_text=fallback,
     )
 
 
 def collect_all(companies: list[str]) -> list[CollectedDoc]:
-    """Collect docs for all companies with a polite crawl delay."""
+    """
+    Collect documents for all companies.
+    Loads the cache (which was updated by data_updater on startup)
+    then builds CollectedDocs with live + cache fallback.
+    """
+    from modules.data_updater import COMPANY_CIKS, ESG_URLS
+
+    cache = cache_module.load()
     docs = []
+
     for i, company in enumerate(companies):
+        # Add new companies to cache automatically
+        cache_module.add_company(cache, company)
+
         try:
-            doc = collect_for_company(company)
-        except Exception as exc:
-            logger.error("Unexpected error collecting %s: %s — using empty doc.", company, exc)
+            doc = collect_for_company(company, cache, COMPANY_CIKS, ESG_URLS)
+        except Exception as e:
+            logger.error("Error collecting %s: %s", company, e)
             doc = CollectedDoc(
                 company=company,
                 source_url=_real_url(company),
-                source_type="none",
+                source_type="cache",
                 raw_text="",
+                fallback_text=_cache_to_text(company, cache),
             )
         docs.append(doc)
-        if doc.source_type == "scrape" and i < len(companies) - 1:
-            time.sleep(0.5)
+        if i < len(companies) - 1:
+            time.sleep(0.3)
+
+    cache_module.save(cache)
     return docs
+
+
+# Keep SIMULATED_DATA alias for any module that still imports it
+SIMULATED_DATA = cache_module.VERIFIED_DEFAULTS
