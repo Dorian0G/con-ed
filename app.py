@@ -284,8 +284,18 @@ if run_btn:
     extracted = extract_metrics(docs, request.metrics)
 
     progress.progress(55, text="🧹 Cleaning and normalizing…")
-    raw_df    = build_raw_df(extracted)
-    clean_df  = build_clean_df(raw_df)
+    raw_df = build_raw_df(extracted)
+
+    # 🔍 DEBUG — keep this for now
+    st.write("Requested metrics:", request.metrics)
+    st.write("Raw DF metrics:", raw_df["Metric"].unique().tolist())
+
+    clean_df = build_clean_df(
+        raw_df,
+        expected_companies=request.companies,
+        expected_metrics=request.metrics,
+    )
+
     filled_df = fill_missing(clean_df)
 
     progress.progress(72, text="📊 Computing rankings…")
