@@ -1,25 +1,21 @@
 """
 config.py
 Global constants, default companies/metrics, and metric synonyms.
-Extend this file to add new metrics without touching module logic.
 """
 
 import os
 import requests
 from datetime import datetime
 
-# ── Output ────────────────────────────────────────────────────────────────────
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ── Dynamic report year ───────────────────────────────────────────────────────
 def current_report_year() -> int:
     now = datetime.now()
     return now.year - 1 if now.month >= 4 else now.year - 2
 
 REPORT_YEAR: int = current_report_year()
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_COMPANIES = [
     "Con Edison",
     "National Grid",
@@ -36,28 +32,29 @@ DEFAULT_METRICS = [
     "Carbon Emissions (MT CO2)",
 ]
 
-# ── Metric synonyms ───────────────────────────────────────────────────────────
 METRIC_SYNONYMS: dict[str, list[str]] = {
-    "Revenue": ["total revenue", "net revenue", "sales", "total sales", "operating revenue"],
+    "Revenue": [
+        "total revenue", "net revenue", "sales", "total sales", "operating revenue",
+    ],
     "Renewable Energy %": [
         "renewable energy percentage", "clean energy %", "renewables share",
         "green energy fraction", "% renewable", "renewable mix",
     ],
     "Outage Frequency": [
         "saidi", "saifi", "outage minutes", "power interruptions",
-        "reliability index", "unplanned outages",
+        "reliability index", "unplanned outages", "outage frequency",
     ],
     "Customer Satisfaction Score": [
         "csat", "j.d. power score", "customer rating", "satisfaction index",
-        "nps", "net promoter score",
+        "nps", "net promoter score", "customer satisfaction",
     ],
     "Carbon Emissions (MT CO2)": [
         "co2 emissions", "greenhouse gas", "ghg emissions", "carbon footprint",
         "scope 1 emissions", "total emissions",
+        "carbon emissions", "carbon emission",   # plain-English matches
     ],
 }
 
-# ── Known company ticker symbols for optional API enrichment ─────────────────
 COMPANY_TICKERS: dict[str, str] = {
     "con edison":               "ED",
     "consolidated edison":      "ED",
@@ -68,7 +65,6 @@ COMPANY_TICKERS: dict[str, str] = {
     "southern company":         "SO",
 }
 
-# ── Fallback IR landing pages ─────────────────────────────────────────────────
 COMPANY_IR_URLS: dict[str, str] = {
     "con edison":               "https://investor.conedison.com/financial-information/annual-reports",
     "consolidated edison":      "https://investor.conedison.com/financial-information/annual-reports",
@@ -79,11 +75,9 @@ COMPANY_IR_URLS: dict[str, str] = {
     "southern company":         "https://investor.southerncompany.com/financial-information/annual-reports",
 }
 
-# ── Per-metric source URLs (built dynamically from REPORT_YEAR) ───────────────
 def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
     y = str(year)
     return {
-        # ── Con Edison / Consolidated Edison ──────────────────────────────────
         ("con edison", "revenue"):
             "https://investor.conedison.com/sec-filings/annual-filings",
         ("con edison", "renewable energy %"):
@@ -94,7 +88,6 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
             "https://investor.conedison.com/sec-filings/annual-filings",
         ("con edison", "carbon emissions (mt co2)"):
             f"https://lite.conedison.com/ehs/{y}-sustainability-report/environment/managing-our-emissions/",
-
         ("consolidated edison", "revenue"):
             "https://investor.conedison.com/sec-filings/annual-filings",
         ("consolidated edison", "renewable energy %"):
@@ -105,8 +98,6 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
             "https://investor.conedison.com/sec-filings/annual-filings",
         ("consolidated edison", "carbon emissions (mt co2)"):
             f"https://lite.conedison.com/ehs/{y}-sustainability-report/environment/managing-our-emissions/",
-
-        # ── National Grid ─────────────────────────────────────────────────────
         ("national grid", "revenue"):
             "https://www.nationalgrid.com/investors/resources/reports-plc",
         ("national grid", "renewable energy %"):
@@ -117,8 +108,6 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
             "https://www.nationalgrid.com/investors/resources/reports-plc",
         ("national grid", "carbon emissions (mt co2)"):
             "https://www.nationalgrid.com/investors/resources/reports-plc",
-
-        # ── Pacific Gas and Electric ───────────────────────────────────────────
         ("pacific gas and electric", "revenue"):
             "https://investor.pgecorp.com/financial-information/annual-reports-and-proxy",
         ("pacific gas and electric", "renewable energy %"):
@@ -129,8 +118,6 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
             "https://investor.pgecorp.com/financial-information/annual-reports-and-proxy",
         ("pacific gas and electric", "carbon emissions (mt co2)"):
             f"https://www.pgecorp.com/corp_responsibility/reports/{y}/en/index.html",
-
-        # ── Duke Energy ───────────────────────────────────────────────────────
         ("duke energy", "revenue"):
             "https://investors.duke-energy.com/financial-information/annual-reports",
         ("duke energy", "renewable energy %"):
@@ -141,8 +128,6 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
             "https://investors.duke-energy.com/financial-information/annual-reports",
         ("duke energy", "carbon emissions (mt co2)"):
             f"https://p-micro.duke-energy.com/annual-report/-/media/pdfs/our-company/investors/de-annual-reports/{y}/{y}-duke-energy-annual-report.pdf",
-
-        # ── Eversource Energy ─────────────────────────────────────────────────
         ("eversource energy", "revenue"):
             "https://investor.eversource.com/financial-information/annual-reports",
         ("eversource energy", "renewable energy %"):
@@ -153,8 +138,6 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
             "https://investor.eversource.com/financial-information/annual-reports",
         ("eversource energy", "carbon emissions (mt co2)"):
             "https://www.eversource.com/content/residential/about/sustainability/reporting-and-disclosures",
-
-        # ── Southern Company ──────────────────────────────────────────────────
         ("southern company", "revenue"):
             "https://investor.southerncompany.com/financial-information/annual-reports",
         ("southern company", "renewable energy %"):
@@ -169,13 +152,11 @@ def _build_metric_urls(year: int) -> dict[tuple[str, str], str]:
 
 METRIC_SOURCE_URLS: dict[tuple[str, str], str] = _build_metric_urls(REPORT_YEAR)
 
-# ── Scraping ──────────────────────────────────────────────────────────────────
 REQUEST_TIMEOUT = 10
 USER_AGENT = (
     "Mozilla/5.0 (compatible; BenchmarkBot/1.0; "
     "+https://example.com/benchmarkbot)"
 )
 
-# ── LLM ───────────────────────────────────────────────────────────────────────
 OPENAI_MODEL = "gpt-4o-mini"
 USE_REAL_LLM = bool(os.getenv("OPENAI_API_KEY"))
