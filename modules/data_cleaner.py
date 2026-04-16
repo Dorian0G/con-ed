@@ -12,16 +12,16 @@ from modules.ai_extractor import ExtractedValue
 logger = logging.getLogger(__name__)
 
 _DIVISOR: dict[str, float] = {
-    "revenue":                      1_000_000_000,
-    "renewable energy %":           1.0,
-    "outage frequency":             1.0,
-    "customer satisfaction score":  10.0,
-    "carbon emissions (mt co2)":    1_000_000,
+    "revenue": 1_000_000_000,
+    "renewable energy %": 1.0,
+    "outage frequency": 1.0,
+    "customer satisfaction score": 10.0,
+    "carbon emissions (mt co2)": 1_000_000,
 }
 
 _SCALE: dict[str, float] = {
-    "billion":  1_000_000_000,
-    "million":  1_000_000,
+    "billion": 1_000_000_000,
+    "million": 1_000_000,
     "thousand": 1_000,
 }
 
@@ -82,9 +82,9 @@ def build_clean_df(
 
     pivot = (
         df.drop_duplicates(subset=["Company", "Metric"], keep="first")
-          .pivot(index="Company", columns="Metric", values="Numeric Value")
-          .reindex(index=all_companies, columns=all_metrics)
-          .reset_index()
+        .pivot(index="Company", columns="Metric", values="Numeric Value")
+        .reindex(index=all_companies, columns=all_metrics)
+        .reset_index()
     )
 
     pivot.columns.name = None
@@ -99,15 +99,9 @@ def fill_missing(clean_df: pd.DataFrame) -> pd.DataFrame:
         n = df[col].isna().sum()
 
         if n and pd.notna(col_mean):
-            logger.info(
-                "Imputing %d missing in '%s' with mean %.4f",
-                n, col, col_mean
-            )
+            logger.info("Imputing %d missing in '%s' with mean %.4f", n, col, col_mean)
             df[col] = df[col].fillna(col_mean)
         elif n:
-            logger.info(
-                "Column '%s' entirely missing — leaving as NaN.",
-                col
-            )
+            logger.info("Column '%s' entirely missing — leaving as NaN.", col)
 
     return df
