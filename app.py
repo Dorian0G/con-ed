@@ -24,8 +24,17 @@ from modules.benchmark_engine import build_benchmark
 from modules.insight_generator import generate_rule_based_insights
 from modules.output_generator import generate_excel
 from modules.copilot_bridge import build_copilot_prompt
-from modules import data_cache as cache_module
-from modules.data_updater import check_for_updates, start_background_scheduler
+try:
+    import modules.data_cache as cache_module
+    from modules.data_updater import check_for_updates, start_background_scheduler
+    _AUTO_UPDATE_AVAILABLE = True
+except ImportError:
+    cache_module = None
+    _AUTO_UPDATE_AVAILABLE = False
+    def check_for_updates(companies, force=False):
+        return {}
+    def start_background_scheduler(companies):
+        pass
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,7 +42,7 @@ logging.basicConfig(level=logging.INFO)
 # Runs in background thread so UI loads immediately.
 # Checks SEC EDGAR, ESG pages and JD Power for new filings.
 # Re-runs every 24 hours via APScheduler (if installed).
-if "_updater_started" not in st.session_state:
+if "_updater_started" not in st.session_state and _AUTO_UPDATE_AVAILABLE:
     _all_companies = [c.strip() for c in DEFAULT_COMPANIES if c.strip()]
     threading.Thread(
         target=check_for_updates,
@@ -341,6 +350,8 @@ with tab1:
     display = bench_df[["Company", "Metric", "Value", "Rank", "Percentile"]].copy()
     # Show per-company per-metric data year from cache where available
     try:
+        if not cache_module or not _AUTO_UPDATE_AVAILABLE:
+            raise ImportError
         _cache = cache_module.load()
         def _get_year(row):
             entry = cache_module.get_value(_cache, row["Company"], row["Metric"])
