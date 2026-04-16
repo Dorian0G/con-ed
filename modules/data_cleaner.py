@@ -1,125 +1,123 @@
 """
 data_cleaner.py
-Converts raw string values from the extractor into numeric form,
-standardizes units, and fills missing values.
-
-Unit conversions supported:
-  billion → multiply by 1e9
-  million → multiply by 1e6
-  thousand → multiply by 1e3
-  % / percent → divide by 100 to get 0-1 fraction (stored separately)
-  MT CO2 → kept as-is (millions of metric tons expected elsewhere)
-
-The output is a tidy pandas DataFrame with one row per (company, metric).
+Converts raw extracted strings to numeric values in natural display units.
+ 
+Display units:
+  Revenue                     ->  $B          15.26  = $15.26 billion
+  Renewable Energy %          ->  %           30.0   = 30%
+  Outage Frequency            ->  minutes     55.0   = 55 min SAIDI
+  Customer Satisfaction Score ->  /100        73.0   = 730/1000 normalised
+  Carbon Emissions (MT CO2)   ->  M MT CO2    2.35   = 2.35 million metric tons
+ 
+Note on Customer Satisfaction:
+  J.D. Power scores are reported on a /1000 scale.
+  The divisor for this metric is 10, converting 730 -> 73.0 (/100).
 """
-
+ 
 import logging
 import re
-
+ 
 import pandas as pd
-
+ 
 from modules.ai_extractor import ExtractedValue
-
+ 
 logger = logging.getLogger(__name__)
-
-# Multipliers for scale words
-_SCALE = {
-    "billion": 1e9,
-    "million": 1e6,
-    "thousand": 1e3,
+ 
+_DIVISOR: dict[str, float] = {
+    "revenue":                      1_000_000_000,  # raw dollars -> $B
+    "renewable energy %":           1.0,
+    "outage frequency":             1.0,             # already minutes
+    "customer satisfaction score":  10.0,            # /1000 JD Power -> /100
+    "carbon emissions (mt co2)":    1_000_000,       # raw tonnes -> M MT
 }
-
-_NUM_EXTRACT = re.compile(r"[\d,]+\.?\d*")
-
-
-def _parse_numeric(raw: str) -> float | None:
+ 
+_SCALE: dict[str, float] = {
+    "billion":  1_000_000_000,
+    "million":  1_000_000,
+    "thousand": 1_000,
+}
+ 
+_NUM_RE = re.compile(r"\d[\d,]*\.?\d*")
+ 
+ 
+def _parse_numeric(raw: str, metric: str = "") -> float | None:
     """
-    Convert a raw value string to a float, applying scale multipliers.
-
-    Examples:
-        "$15.7 billion" → 15_700_000_000.0
-        "28%"           → 28.0
-        "72 minutes"    → 72.0
-        "N/A"           → None
+    Convert a raw string to a float in display units.
+    Applies scale words (billion/million) then per-metric divisor.
     """
     if not raw or raw.strip().upper() in ("N/A", "NONE", "NULL", ""):
         return None
-
+ 
     raw_lower = raw.lower()
-
-    # Find the first number in the string
-    m = _NUM_EXTRACT.search(raw)
+ 
+    m = _NUM_RE.search(raw)
     if not m:
         return None
-
+ 
     try:
         num = float(m.group().replace(",", ""))
     except ValueError:
         return None
-
-    # Apply scale
+ 
     for word, mult in _SCALE.items():
         if word in raw_lower:
-            return num * mult
-
-    return num
-
-
+            num *= mult
+            break
+ 
+    divisor = _DIVISOR.get(metric.lower().strip(), 1.0)
+    return round(num / divisor, 4)
+ 
+ 
 def build_raw_df(values: list[ExtractedValue]) -> pd.DataFrame:
-    """
-    Build the raw data DataFrame directly from extractor output.
-    Columns: Company | Metric | Value (raw string) | Source | Source Type
-    """
-    rows = [
+    return pd.DataFrame([
         {
-            "Company": v.company,
-            "Metric": v.metric,
-            "Value": v.raw_value,
-            "Source": v.source_url,
+            "Company":     v.company,
+            "Metric":      v.metric,
+            "Value":       v.raw_value,
+            "Source":      v.source_url,
             "Source Type": v.source_type,
-            "Confidence": v.confidence,
+            "Confidence":  v.confidence,
         }
         for v in values
-    ]
-    return pd.DataFrame(rows)
-
-
+    ])
+ 
+ 
 def build_clean_df(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Produce a cleaned, pivoted DataFrame:
-      rows = companies
-      columns = metrics
-    All values are numeric (float). Missing values are NaN.
-    """
     df = raw_df.copy()
-
-    # Parse numeric values
-    df["Numeric Value"] = df["Value"].apply(_parse_numeric)
-
-    # Pivot: companies as rows, metrics as columns
-    pivot = df.pivot_table(
-        index="Company",
-        columns="Metric",
-        values="Numeric Value",
-        aggfunc="first",    # take first occurrence if duplicates
-    ).reset_index()
-
-    pivot.columns.name = None   # remove MultiIndex name artifact
+    df["Numeric Value"] = df.apply(
+        lambda row: _parse_numeric(row["Value"], row["Metric"]),
+        axis=1,
+    )
+    all_companies = df["Company"].unique().tolist()
+    all_metrics   = df["Metric"].unique().tolist()
+ 
+    pivot = (
+        df.pivot_table(
+            index="Company",
+            columns="Metric",
+            values="Numeric Value",
+            aggfunc="first",
+        )
+        .reset_index()
+    )
+    pivot.columns.name = None
+    pivot = (
+        pivot
+        .set_index("Company")
+        .reindex(index=all_companies, columns=all_metrics)
+        .reset_index()
+    )
+    pivot.columns.name = None
     return pivot
-
-
+ 
+ 
 def fill_missing(clean_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fill NaN values with the column mean (industry average imputation).
-    Records which cells were imputed so users know.
-    Returns the filled DataFrame.
-    """
     df = clean_df.copy()
-    numeric_cols = [c for c in df.columns if c != "Company"]
-    for col in numeric_cols:
+    for col in [c for c in df.columns if c != "Company"]:
         col_mean = df[col].mean()
-        n_missing = df[col].isna().sum()
-        if n_missing > 0:
-            logger.info("Imputing %d missing values in '%s' with mean %.2f", n_missing, col, col_mean)
+        n = df[col].isna().sum()
+        if n:
+            logger.info("Imputing %d missing in '%s' with mean %.4f", n, col, col_mean)
             df[col] = df[col].fillna(col_mean)
     return df
+ 
