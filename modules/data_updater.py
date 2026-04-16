@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 import requests
 from bs4 import BeautifulSoup
 
-import modules.data_cache as cache_module
+from modules import data_cache as cache_module
 
 logger = logging.getLogger(__name__)
 
