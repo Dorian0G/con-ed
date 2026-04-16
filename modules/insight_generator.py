@@ -15,6 +15,7 @@ import logging
 
 import pandas as pd
 
+
 from modules.config import OPENAI_MODEL, USE_REAL_LLM
 from modules.benchmark_engine import LOWER_IS_BETTER
 
@@ -39,9 +40,6 @@ def _bottom_performer(bench_df: pd.DataFrame, metric: str) -> str:
 
 def generate_rule_based_insights(bench_df: pd.DataFrame) -> str:
     """Generate deterministic insight bullets from benchmark data."""
-    if bench_df.empty or "Metric" not in bench_df.columns:
-        return "## AI-Generated Benchmark Insights\n\nNo benchmark data available. Please check your inputs and ensure metrics are properly configured."
-
     metrics = bench_df["Metric"].unique().tolist()
     lines = ["## AI-Generated Benchmark Insights\n"]
 
@@ -71,9 +69,6 @@ def generate_rule_based_insights(bench_df: pd.DataFrame) -> str:
 
 def _bench_to_summary_text(bench_df: pd.DataFrame) -> str:
     """Convert benchmark DataFrame to a compact text representation for the LLM."""
-    if bench_df.empty or "Metric" not in bench_df.columns:
-        return "No benchmark data available."
-
     lines = []
     for metric in bench_df["Metric"].unique():
         sub = bench_df[bench_df["Metric"] == metric].sort_values("Rank")

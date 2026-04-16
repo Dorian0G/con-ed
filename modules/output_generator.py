@@ -1,19 +1,6 @@
 """
 output_generator.py
 Writes a three-sheet Excel workbook using openpyxl.
-
-Sheet layout:
-  Sheet 1 – Raw Data    : Company | Metric | Value | Source | Source Type | Confidence
-  Sheet 2 – Cleaned Data: pivoted numeric table (companies × metrics)
-  Sheet 3 – Benchmark   : Company | Metric | Value | Rank | Industry Average | Percentile
-
-An optional Sheet 4 (Insights) is appended when insight text is provided.
-
-Formatting:
-  - Header row: dark navy fill, white bold text
-  - Alternating row shading for readability
-  - Auto-width columns (capped at 40 chars)
-  - Number format: comma thousands separator, 2 decimal places
 """
 
 import io
@@ -23,22 +10,35 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, numbers
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 logger = logging.getLogger(__name__)
 
-# ── Style constants ────────────────────────────────────────────────────────────
 HEADER_FILL  = PatternFill("solid", fgColor="1B3A5C")
 HEADER_FONT  = Font(bold=True, color="FFFFFF", size=11)
 ALT_ROW_FILL = PatternFill("solid", fgColor="EAF1FB")
 NUMBER_FMT   = '#,##0.00'
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert every column to plain Python-native types that openpyxl can
+    serialise.  Handles pandas nullable Int64/Float64 extension types where
+    <NA> is not the same object as float('nan') and cannot be written to Excel.
+    Uses convert_dtypes(dtype_backend='numpy_nullable') to unwrap extension
+    arrays, then replaces every remaining NA sentinel with None.
+    """
+    out = df.copy()
+    for col in out.columns:
+        out[col] = [
+            None if pd.isna(v) else v          # catch pd.NA / np.nan / pd.NaT
+            for v in out[col].astype(object)   # unwrap extension array first
+        ]
+    return out
+
 
 def _style_header(ws, row_idx: int = 1):
-    """Apply header styling to the given row."""
     for cell in ws[row_idx]:
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
@@ -46,14 +46,12 @@ def _style_header(ws, row_idx: int = 1):
 
 
 def _autowidth(ws):
-    """Set column widths based on content, capped at 40."""
     for col in ws.columns:
         max_len = max((len(str(c.value or "")) for c in col), default=10)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 40)
 
 
 def _alt_rows(ws, start_row: int = 2):
-    """Apply alternating fill to data rows."""
     for i, row in enumerate(ws.iter_rows(min_row=start_row)):
         if i % 2 == 1:
             for cell in row:
@@ -62,16 +60,15 @@ def _alt_rows(ws, start_row: int = 2):
 
 def _write_df(ws, df: pd.DataFrame, number_cols: list[str] | None = None):
     """Write a DataFrame to a worksheet starting at A1."""
-    # Header
+    df = _sanitize_df(df)
+
     ws.append(df.columns.tolist())
     _style_header(ws)
 
-    # Rows
     number_cols = number_cols or []
     for row in df.itertuples(index=False):
         ws.append(list(row))
 
-    # Number formatting
     col_indices = {col: df.columns.get_loc(col) + 1 for col in number_cols if col in df.columns}
     for row in ws.iter_rows(min_row=2):
         for cell in row:
@@ -82,8 +79,6 @@ def _write_df(ws, df: pd.DataFrame, number_cols: list[str] | None = None):
     _autowidth(ws)
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
-
 def generate_excel(
     raw_df: pd.DataFrame,
     clean_df: pd.DataFrame,
@@ -91,37 +86,19 @@ def generate_excel(
     insights: str = "",
     copilot_prompt: str = "",
 ) -> bytes:
-    """
-    Build the Excel workbook and return it as bytes (for Streamlit download).
-
-    Parameters
-    ----------
-    raw_df   : Raw data from extractor
-    clean_df : Cleaned, pivoted data
-    bench_df : Benchmark summary with ranks/percentiles
-    insights : Optional AI-generated insight text
-
-    Returns
-    -------
-    bytes — the .xlsx file contents
-    """
     wb = Workbook()
 
-    # ── Sheet 1: Raw Data ───────────────────────────────────────────────────
     ws1 = wb.active
     ws1.title = "Raw Data"
     _write_df(ws1, raw_df)
 
-    # ── Sheet 2: Cleaned Data ───────────────────────────────────────────────
     ws2 = wb.create_sheet("Cleaned Data")
     numeric_cols = [c for c in clean_df.columns if c != "Company"]
     _write_df(ws2, clean_df, number_cols=numeric_cols)
 
-    # ── Sheet 3: Benchmark Summary ──────────────────────────────────────────
     ws3 = wb.create_sheet("Benchmark Summary")
     _write_df(ws3, bench_df, number_cols=["Value", "Industry Average", "Percentile"])
 
-    # ── Sheet 4: Insights (optional) ────────────────────────────────────────
     if insights:
         ws4 = wb.create_sheet("AI Insights")
         ws4.append(["AI-Generated Insights"])
@@ -130,7 +107,6 @@ def generate_excel(
             ws4.append([line])
         ws4.column_dimensions["A"].width = 90
 
-    # ── Sheet 5: Copilot prompt (optional) ───────────────────────────────────
     if copilot_prompt:
         ws5 = wb.create_sheet("Copilot Prompt")
         ws5.append(["Paste this prompt into copilot.microsoft.com"])
@@ -140,12 +116,10 @@ def generate_excel(
             ws5.append([line])
         ws5.column_dimensions["A"].width = 100
 
-    # ── Timestamp metadata ──────────────────────────────────────────────────
     wb.properties.description = (
         f"Generated by Utility Benchmark Tool · {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     )
 
-    # Return bytes (for Streamlit download button)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -158,7 +132,6 @@ def save_excel(
     insights: str = "",
     path: str | Path = "outputs/benchmark.xlsx",
 ) -> Path:
-    """Save the workbook to disk and return the path."""
     data = generate_excel(raw_df, clean_df, bench_df, insights)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)

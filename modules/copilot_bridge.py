@@ -2,14 +2,6 @@
 copilot_bridge.py
 Generates a structured, ready-to-paste prompt for Microsoft Copilot
 (copilot.microsoft.com — free, public, no API key required).
-
-Design rationale:
-- Instead of calling any AI API, we embed the benchmark data directly
-  inside a well-structured natural-language prompt.
-- The user pastes this into the public Copilot chat and gets executive
-  summaries, slide drafts, or strategic recommendations instantly.
-- The prompt is also saved as a sheet in the Excel output so it travels
-  with the workbook.
 """
 
 import pandas as pd
@@ -18,9 +10,6 @@ from modules.benchmark_engine import LOWER_IS_BETTER
 
 def _format_table(bench_df: pd.DataFrame) -> str:
     """Build a compact plain-text table of benchmark results."""
-    if bench_df.empty or "Metric" not in bench_df.columns:
-        return "No benchmark data available."
-
     metrics = bench_df["Metric"].unique().tolist()
     lines = []
 
@@ -31,10 +20,10 @@ def _format_table(bench_df: pd.DataFrame) -> str:
         lines.append("  " + "-" * 65)
         sub = bench_df[bench_df["Metric"] == metric].sort_values("Rank")
         for _, row in sub.iterrows():
-            val = f"{row['Value']:,.2f}" if pd.notna(row["Value"]) else "N/A"
-            lines.append(
-                f"  {row['Company']:<32} {val:>14}  {int(row['Rank']):>5}  {row['Percentile']:>9.1f}%"
-            )
+            val  = f"{row['Value']:,.2f}" if pd.notna(row["Value"]) else "N/A"
+            rank = int(row["Rank"]) if pd.notna(row["Rank"]) else "N/A"
+            pct  = f"{row['Percentile']:>9.1f}%" if pd.notna(row["Percentile"]) else "   N/A   "
+            lines.append(f"  {row['Company']:<32} {val:>14}  {str(rank):>5}  {pct}")
         avg = sub["Industry Average"].iloc[0]
         lines.append(f"  {'Industry average':<32} {avg:>14,.2f}")
 
@@ -46,16 +35,6 @@ def build_copilot_prompt(
     companies: list[str],
     metrics: list[str],
 ) -> str:
-    """
-    Return a fully self-contained prompt string ready to paste into
-    copilot.microsoft.com.
-
-    The prompt:
-    1. Sets the context (who, what, why)
-    2. Embeds the full benchmark data as plain text
-    3. Asks for specific, useful outputs
-    4. Includes follow-up suggestions
-    """
     table = _format_table(bench_df)
     company_list = ", ".join(companies)
     metric_list  = ", ".join(metrics)
