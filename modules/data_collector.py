@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import requests
 from bs4 import BeautifulSoup
 
-import modules.data_cache as cache_module
+from modules import data_cache as cache_module
 from modules.config import COMPANY_IR_URLS, COMPANY_TICKERS, REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
