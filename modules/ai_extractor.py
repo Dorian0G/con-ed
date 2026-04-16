@@ -1,16 +1,15 @@
 """
 ai_extractor.py
-Extracts metric values from raw text using either a real LLM (OpenAI)
-or a robust rule-based simulator.
+Extracts metric values from collected documents.
 
-Design decisions:
-- The same ExtractedValue dataclass is returned regardless of backend,
-  so swapping real vs. simulated has zero effect on downstream modules.
-- The rule-based extractor uses regex + synonym matching from config.py
-  rather than hardcoded patterns — adding a new metric only requires
-  updating METRIC_SYNONYMS in config.py.
-- When USE_REAL_LLM is True and an API key is set, the LLM prompt is
-  structured so the model returns valid JSON, which is then parsed safely.
+Per-metric priority:
+  1. Try live text (EDGAR XBRL, 10-K snippets, ESG scrape)
+  2. If not found, try fallback text (verified primary-source data)
+  3. If still not found, return N/A
+
+Source type recorded per metric so the Raw Data tab shows exactly where
+each value came from: e.g. "edgar-xbrl" for Revenue, "verified-fallback"
+for Renewable % when the ESG scrape didn't have it.
 """
 
 import json
@@ -18,77 +17,130 @@ import logging
 import re
 from dataclasses import dataclass
 
-from modules.config import METRIC_SYNONYMS, OPENAI_MODEL, USE_REAL_LLM
+from modules.config import OPENAI_MODEL, USE_REAL_LLM
 from modules.data_collector import CollectedDoc
 
 logger = logging.getLogger(__name__)
 
 
-# ── Data structure ─────────────────────────────────────────────────────────────
-
 @dataclass
 class ExtractedValue:
     company: str
     metric: str
-    raw_value: str           # exactly as found in text
+    raw_value: str        # e.g. "15.26 billion" or "30 %"
     source_url: str
-    source_type: str
-    confidence: float        # 0.0 – 1.0
+    source_type: str      # "live" | "verified-fallback" | "N/A"
+    confidence: float
 
 
-# ── Rule-based (simulated) extractor ──────────────────────────────────────────
+# ── Metric-specific patterns (tuned for real 10-K / ESG language) ─────────────
 
-# Number pattern: matches values like "$15.7 billion", "28%", "72 minutes"
-_NUM_RE = re.compile(
-    r"""
-    (?:\$\s*)?              # optional dollar sign
-    (\d{1,3}(?:[,\.]\d+)*)  # integer or decimal, with commas ok
-    \s*
-    (billion|million|thousand|%|percent|minutes?|mt|score|points?)?
-    """,
-    re.IGNORECASE | re.VERBOSE,
+PATTERNS: dict[str, list[re.Pattern]] = {
+    "Revenue": [
+        re.compile(r'revenues?\D{0,30}?\$\s*(\d[\d,]*\.?\d*)\s*(billion|million|thousand)?', re.I),
+        re.compile(r'\$\s*(\d[\d,]*\.?\d*)\s*(billion|million|thousand)', re.I),
+        re.compile(r'revenues?\D{0,50}?(\d[\d,]*\.?\d*)\s*(billion|million)', re.I),
+    ],
+    "Renewable Energy %": [
+        re.compile(r'(?:renewable|clean)\s+energy\D{0,50}?(\d[\d,]*\.?\d*)\s*(%|percent)', re.I),
+        re.compile(r'(\d[\d,]*\.?\d*)\s*(?:%|percent)\s+of\s+(?:electric\s+)?(?:supply|generation|electricity|energy)', re.I),
+        re.compile(r'(\d[\d,]*\.?\d*)\s*(?:%|percent)\D{0,30}(?:renewable|clean\s+energy)', re.I),
+    ],
+    "Outage Frequency": [
+        re.compile(r'SAIDI\D{0,50}?(\d[\d,]*\.?\d*)\s*(minutes?)?', re.I),
+        re.compile(r'(?:system\s+average\s+interruption\s+duration|interruption\s+duration\s+index)\D{0,50}?(\d[\d,]*\.?\d*)', re.I),
+        re.compile(r'(\d[\d,]*\.?\d*)\s*(?:customer[- ])?minutes?\s+(?:of\s+)?(?:outage|interruption)', re.I),
+    ],
+    "Customer Satisfaction Score": [
+        re.compile(r'(?:J\.?\s*D\.?\s*Power|satisfaction\s+(?:score|index|rating))\D{0,60}?(\d{2,3})\b', re.I),
+        re.compile(r'(\d{2,3})\s*(?:out\s+of\s+(?:100|1000)|/\s*(?:100|1000))', re.I),
+    ],
+    "Carbon Emissions (MT CO2)": [
+        re.compile(r'(?:scope\s*1|greenhouse\s+gas|GHG|carbon)\s+emissions\D{0,50}?(\d[\d,]*\.?\d*)\s*(million\s+metric\s+tons?|million\s+MT|Mt\b|MMT)', re.I),
+        re.compile(r'(\d[\d,]*\.?\d*)\s*(million\s+metric\s+tons?|million\s+MT|Mt\b|MMT)\s+(?:of\s+)?CO2', re.I),
+        re.compile(r'(?:scope\s*1|GHG|carbon)\D{0,30}?(\d[\d,]*\.?\d*)\s*(million\s+metric\s+tons?|MMT|Mt\b)', re.I),
+    ],
+}
+
+# Generic synonym fallback used when specific patterns don't match
+METRIC_SYNONYMS: dict[str, list[str]] = {
+    "Revenue":                      ["total revenue", "net revenue", "operating revenue"],
+    "Renewable Energy %":           ["renewable energy percentage", "clean energy", "renewables"],
+    "Outage Frequency":             ["saidi", "outage frequency", "interruption duration"],
+    "Customer Satisfaction Score":  ["customer satisfaction", "j.d. power", "csat"],
+    "Carbon Emissions (MT CO2)":    ["carbon emissions", "scope 1", "ghg emissions", "greenhouse gas"],
+}
+
+_GENERIC_NUM_RE = re.compile(
+    r'(?:\$\s*)?(\d[\d,]*\.?\d*)\s*(billion|million|thousand|%|percent|minutes?|mt\b)?',
+    re.IGNORECASE
 )
 
 
-def _find_value_near_keyword(text: str, keywords: list[str]) -> str | None:
-    """
-    Search for a numeric value in sentences containing any keyword.
-    Returns the first match as a raw string, or None.
-    """
-    sentences = re.split(r"[.\n]+", text)
-    for kw in keywords:
+def _extract(text: str, metric: str) -> str | None:
+    """Try metric-specific patterns, then synonym keyword search."""
+    if not text or not text.strip():
+        return None
+
+    # 1. Specific patterns
+    for pat in PATTERNS.get(metric, []):
+        m = pat.search(text)
+        if m:
+            num  = m.group(1)
+            unit = m.group(2) if m.lastindex and m.lastindex >= 2 and m.group(2) else ""
+            return f"{num} {unit}".strip()
+
+    # 2. Synonym + generic number
+    synonyms = METRIC_SYNONYMS.get(metric, [metric])
+    sentences = re.split(r'(?<=[a-zA-Z0-9%])\.\s+|\n', text)
+    for kw in synonyms:
         for sentence in sentences:
             if kw.lower() in sentence.lower():
-                m = _NUM_RE.search(sentence)
+                m = _GENERIC_NUM_RE.search(sentence)
                 if m:
-                    # Reconstruct the matched value with its unit
-                    num = m.group(1)
                     unit = m.group(2) or ""
-                    return f"{num} {unit}".strip()
+                    return f"{m.group(1)} {unit}".strip()
+
     return None
 
 
 def extract_rule_based(doc: CollectedDoc, metrics: list[str]) -> list[ExtractedValue]:
-    """Rule-based extraction using synonym matching and regex."""
+    """
+    For each metric:
+      1. Try live text (real EDGAR/ESG data)
+      2. If not found, try fallback text (verified primary-source data)
+      3. Record source_type accurately so users know where each value came from
+    """
     results = []
     for metric in metrics:
-        synonyms = METRIC_SYNONYMS.get(metric, [metric])
-        all_keywords = [metric] + synonyms
-        raw = _find_value_near_keyword(doc.raw_text, all_keywords)
-        results.append(
-            ExtractedValue(
-                company=doc.company,
-                metric=metric,
-                raw_value=raw or "N/A",
-                source_url=doc.source_url,
-                source_type=doc.source_type,
-                confidence=0.75 if raw else 0.0,
-            )
-        )
+        # Try live text first
+        raw = _extract(doc.raw_text, metric)
+        if raw:
+            source_type = doc.source_type   # e.g. "edgar-xbrl+esg-scrape"
+            confidence  = 0.85
+        else:
+            # Fall back to verified data for this metric
+            raw = _extract(doc.fallback_text, metric)
+            if raw:
+                source_type = "verified-fallback"
+                confidence  = 0.75
+            else:
+                source_type = "not-found"
+                confidence  = 0.0
+
+        results.append(ExtractedValue(
+            company=doc.company,
+            metric=metric,
+            raw_value=raw or "N/A",
+            source_url=doc.source_url,
+            source_type=source_type,
+            confidence=confidence,
+        ))
+
     return results
 
 
-# ── LLM-based extractor ────────────────────────────────────────────────────────
+# ── LLM extractor (optional) ──────────────────────────────────────────────────
 
 def _build_llm_prompt(company: str, metrics: list[str], text: str) -> str:
     metric_list = "\n".join(f"- {m}" for m in metrics)
@@ -96,7 +148,7 @@ def _build_llm_prompt(company: str, metrics: list[str], text: str) -> str:
 You are a financial data analyst. Extract the following metrics for {company}
 from the text below. Return ONLY valid JSON — no markdown, no explanation.
 
-Metrics to extract:
+Metrics:
 {metric_list}
 
 Text:
@@ -105,58 +157,46 @@ Text:
 Return format:
 {{
   "metrics": {{
-    "<metric name>": "<value as string, including unit, or null if not found>"
+    "<metric name>": "<value as string with unit, or null>"
   }}
 }}
 """
 
 
 def extract_llm(doc: CollectedDoc, metrics: list[str]) -> list[ExtractedValue]:
-    """LLM-based extraction via OpenAI API."""
+    """LLM extraction — uses combined text, falls back to rule-based on failure."""
+    combined = "\n\n".join(t for t in [doc.raw_text, doc.fallback_text] if t.strip())
     try:
         from openai import OpenAI
         client = OpenAI()
-        prompt = _build_llm_prompt(doc.company, metrics, doc.raw_text)
+        prompt = _build_llm_prompt(doc.company, metrics, combined)
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
-        raw_json = response.choices[0].message.content or "{}"
-        # Strip accidental markdown fences
-        raw_json = re.sub(r"```json|```", "", raw_json).strip()
-        data = json.loads(raw_json)
-        extracted = data.get("metrics", {})
-    except Exception as exc:
-        logger.warning("LLM extraction failed for %s: %s. Falling back.", doc.company, exc)
+        raw_json = re.sub(r"```json|```", "", response.choices[0].message.content or "{}").strip()
+        extracted = json.loads(raw_json).get("metrics", {})
+    except Exception as e:
+        logger.warning("LLM failed for %s: %s — falling back to rule-based", doc.company, e)
         return extract_rule_based(doc, metrics)
 
-    results = []
-    for metric in metrics:
-        val = extracted.get(metric)
-        results.append(
-            ExtractedValue(
-                company=doc.company,
-                metric=metric,
-                raw_value=val if val else "N/A",
-                source_url=doc.source_url,
-                source_type=f"{doc.source_type}+llm",
-                confidence=0.9 if val else 0.0,
-            )
+    return [
+        ExtractedValue(
+            company=doc.company,
+            metric=metric,
+            raw_value=extracted.get(metric) or "N/A",
+            source_url=doc.source_url,
+            source_type=f"{doc.source_type}+llm" if extracted.get(metric) else "not-found",
+            confidence=0.9 if extracted.get(metric) else 0.0,
         )
-    return results
+        for metric in metrics
+    ]
 
-
-# ── Public interface ──────────────────────────────────────────────────────────
 
 def extract_metrics(docs: list[CollectedDoc], metrics: list[str]) -> list[ExtractedValue]:
-    """
-    Extract all metrics from all collected docs.
-    Uses LLM if configured, otherwise rule-based.
-    """
-    all_values: list[ExtractedValue] = []
     extractor = extract_llm if USE_REAL_LLM else extract_rule_based
+    results = []
     for doc in docs:
-        values = extractor(doc, metrics)
-        all_values.extend(values)
-    return all_values
+        results.extend(extractor(doc, metrics))
+    return results
