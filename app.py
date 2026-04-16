@@ -228,8 +228,6 @@ def make_metric_chart(bench_df: pd.DataFrame, metric: str) -> alt.Chart:
             ),
             height=max(200, len(sub) * 42),
         )
-        .configure_axis(labelFontSize=12, titleFontSize=11)
-        .configure_view(strokeWidth=0)
     )
 
 
