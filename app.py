@@ -29,6 +29,13 @@ from modules.data_updater import check_for_updates, start_background_scheduler
 
 logging.basicConfig(level=logging.INFO)
 
+st.set_page_config(
+    page_title="Utility Benchmark Tool",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 # ── Auto-update on startup ─────────────────────────────────────────────────────
 # Runs in background thread so UI loads immediately.
 # Checks SEC EDGAR, ESG pages and JD Power for new filings.
@@ -42,13 +49,6 @@ if "_updater_started" not in st.session_state:
     ).start()
     start_background_scheduler(_all_companies)
     st.session_state._updater_started = True
-
-st.set_page_config(
-    page_title="Utility Benchmark Tool",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 st.markdown("""
 <style>
@@ -128,6 +128,7 @@ METRIC_META = {
         "chart_note":     "↓ Lower = smaller carbon footprint  ⚠️ Not comparable across generator vs distributor",
     },
 }
+
 # ── Data year per metric (most recent available as of Apr 2026) ───────────────
 METRIC_DATA_YEAR: dict[str, str] = {
     "Revenue":                      "FY2025",
@@ -136,7 +137,6 @@ METRIC_DATA_YEAR: dict[str, str] = {
     "Customer Satisfaction Score":  "2025",
     "Carbon Emissions (MT CO2)":    "FY2024",
 }
-
 
 
 def _fmt(metric: str, value: float) -> str:
@@ -159,34 +159,40 @@ def make_metric_chart(bench_df: pd.DataFrame, metric: str) -> alt.Chart:
     if sub.empty:
         return alt.Chart(pd.DataFrame()).mark_text().encode()
 
-    meta         = METRIC_META.get(metric, {})
+    meta = METRIC_META.get(metric, {})
     lower_better = meta.get("lower_is_better", False)
-    axis_title   = meta.get("axis_title", metric)
-    note         = meta.get("chart_note", "")
-    fmt_fn       = meta.get("format", lambda v: f"{v:.2f}")
-    expected     = meta.get("expected_range", "")
+    axis_title = meta.get("axis_title", metric)
+    note = meta.get("chart_note", "")
+    fmt_fn = meta.get("format", lambda v: f"{v:.2f}")
+    expected = meta.get("expected_range", "")
 
     sub = sub.sort_values("Value", ascending=lower_better).reset_index(drop=True)
-    sub["rank"]  = range(len(sub))
+    sub["rank"] = range(len(sub))
     sub["label"] = sub["Value"].apply(lambda v: fmt_fn(float(v)))
 
     bars = (
         alt.Chart(sub)
         .mark_bar()
         .encode(
-            x=alt.X("Value:Q",
-                    title=axis_title,
-                    scale=alt.Scale(zero=True),
-                    axis=alt.Axis(format="~g")),
-            y=alt.Y("Company:N",
-                    sort=list(sub["Company"]),
-                    title=""),
-            color=alt.Color("rank:Q",
-                            scale=alt.Scale(range=["#1B3A5C", "#7BB8F0"]),
-                            legend=None),
+            x=alt.X(
+                "Value:Q",
+                title=axis_title,
+                scale=alt.Scale(zero=True),
+                axis=alt.Axis(format="~g"),
+            ),
+            y=alt.Y(
+                "Company:N",
+                sort=list(sub["Company"]),
+                title="",
+            ),
+            color=alt.Color(
+                "rank:Q",
+                scale=alt.Scale(range=["#1B3A5C", "#7BB8F0"]),
+                legend=None,
+            ),
             tooltip=[
                 alt.Tooltip("Company:N", title="Company"),
-                alt.Tooltip("label:N",   title=axis_title),
+                alt.Tooltip("label:N", title=axis_title),
             ],
         )
     )
@@ -255,20 +261,20 @@ with st.sidebar:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 st.title("⚡ Utility Company Benchmark Analysis")
-st.caption(f"FY2025 data (most recent available) · Primary sources: SEC EDGAR, company earnings releases, J.D. Power 2025")
+st.caption("FY2025 data (most recent available) · Primary sources: SEC EDGAR, company earnings releases, J.D. Power 2025")
 
 if not run_btn and "bench_df" not in st.session_state:
     col1, col2, col3 = st.columns(3)
     col1.metric("Companies supported", "2 – 10")
-    col2.metric("Metrics supported",   "3 – 10")
-    col3.metric("Export formats",      "Excel + Copilot prompt")
+    col2.metric("Metrics supported", "3 – 10")
+    col3.metric("Export formats", "Excel + Copilot prompt")
     st.info("Enter companies and metrics in the sidebar, then click **Run Benchmark**.")
     st.stop()
 
 # ── Run pipeline only on button click ─────────────────────────────────────────
 if run_btn:
     companies = [c for c in companies_raw.strip().splitlines() if c.strip()]
-    metrics   = [m for m in metrics_raw.strip().splitlines()   if m.strip()]
+    metrics = [m for m in metrics_raw.strip().splitlines() if m.strip()]
 
     try:
         request = parse_input(companies, metrics)
@@ -286,44 +292,44 @@ if run_btn:
     progress.progress(55, text="🧹 Cleaning and normalizing…")
     raw_df = build_raw_df(extracted)
 
-    # 🔍 DEBUG — keep this for now
-    st.write("Requested metrics:", request.metrics)
-    st.write("Raw DF metrics:", raw_df["Metric"].unique().tolist())
-
     clean_df = build_clean_df(
         raw_df,
         expected_companies=request.companies,
         expected_metrics=request.metrics,
     )
-
     filled_df = fill_missing(clean_df)
 
     progress.progress(72, text="📊 Computing rankings…")
     bench_df = build_benchmark(filled_df)
+
+    if bench_df.empty:
+        st.error("No benchmark rows were generated.")
+        st.dataframe(raw_df, use_container_width=True, hide_index=True)
+        st.stop()
 
     progress.progress(87, text="💡 Generating insights…")
     insights = generate_rule_based_insights(bench_df)
 
     progress.progress(95, text="📦 Preparing Excel…")
     copilot_prompt = build_copilot_prompt(bench_df, request.companies, request.metrics)
-    excel_bytes    = generate_excel(raw_df, clean_df, bench_df, insights, copilot_prompt=copilot_prompt)
+    excel_bytes = generate_excel(raw_df, clean_df, bench_df, insights, copilot_prompt=copilot_prompt)
     progress.progress(100, text="✅ Done!")
 
-    st.session_state.bench_df       = bench_df
-    st.session_state.raw_df         = raw_df
-    st.session_state.filled_df      = filled_df
-    st.session_state.insights       = insights
+    st.session_state.bench_df = bench_df
+    st.session_state.raw_df = raw_df
+    st.session_state.filled_df = filled_df
+    st.session_state.insights = insights
     st.session_state.copilot_prompt = copilot_prompt
-    st.session_state.excel_bytes    = excel_bytes
-    st.session_state.request        = request
+    st.session_state.excel_bytes = excel_bytes
+    st.session_state.request = request
 
-bench_df       = st.session_state.bench_df
-raw_df         = st.session_state.raw_df
-filled_df      = st.session_state.filled_df
-insights       = st.session_state.insights
+bench_df = st.session_state.bench_df
+raw_df = st.session_state.raw_df
+filled_df = st.session_state.filled_df
+insights = st.session_state.insights
 copilot_prompt = st.session_state.copilot_prompt
-excel_bytes    = st.session_state.excel_bytes
-request        = st.session_state.request
+excel_bytes = st.session_state.excel_bytes
+request = st.session_state.request
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -347,22 +353,23 @@ with tab1:
             )
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Format the Value column with units
     display = bench_df[["Company", "Metric", "Value", "Rank", "Percentile"]].copy()
-    # Show per-company per-metric data year from cache where available
+
     try:
         _cache = cache_module.load()
+
         def _get_year(row):
             entry = cache_module.get_value(_cache, row["Company"], row["Metric"])
             if entry and entry.get("year") and entry["year"] != "seed":
                 return entry["year"]
             return METRIC_DATA_YEAR.get(row["Metric"], "FY2025")
+
         display["Data Year"] = display.apply(_get_year, axis=1)
     except Exception:
         display["Data Year"] = display["Metric"].map(
             lambda m: METRIC_DATA_YEAR.get(m, "FY2025")
         )
-    # Reorder columns so Data Year is next to Metric
+
     display = display[["Company", "Metric", "Data Year", "Value", "Rank", "Percentile"]]
     display["Value"] = display.apply(
         lambda row: _fmt(row["Metric"], row["Value"]) if pd.notna(row["Value"]) else "N/A",
@@ -373,7 +380,6 @@ with tab1:
     )
 
     st.dataframe(display, use_container_width=True, hide_index=True)
-
 
 # ── Tab 2: Charts ──────────────────────────────────────────────────────────────
 with tab2:
@@ -400,12 +406,10 @@ with tab2:
             "This is a structural difference — compare within peer type for a fair assessment."
         )
 
-
 # ── Tab 3: Clean Data ──────────────────────────────────────────────────────────
 with tab3:
     st.subheader("Cleaned & Normalized Data")
 
-    # Show units clearly
     st.markdown(
         "| Metric | Unit | What it means |\n"
         "|--------|------|---------------|\n" +
@@ -419,7 +423,6 @@ with tab3:
 
     st.dataframe(filled_df, use_container_width=True, hide_index=True)
     st.caption("Missing values imputed with column mean.")
-
 
 # ── Tab 4: Raw Data ────────────────────────────────────────────────────────────
 with tab4:
@@ -437,12 +440,10 @@ with tab4:
         f"**{fb_count}** values from verified fallback data (primary-source figures, used when live scraping unavailable)"
     )
 
-
 # ── Tab 5: Insights ────────────────────────────────────────────────────────────
 with tab5:
     st.subheader("AI-Generated Insights")
     st.markdown(insights)
-
 
 # ── Tab 6: Copilot ─────────────────────────────────────────────────────────────
 with tab6:
@@ -462,7 +463,6 @@ with tab6:
 - *"Draft a PowerPoint slide for each metric"*
 - *"Write a CEO briefing note on top and bottom performers"*
 """)
-
 
 # ── Download ───────────────────────────────────────────────────────────────────
 st.divider()
